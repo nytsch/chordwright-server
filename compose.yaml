@@ -1,0 +1,19 @@
+# Der Server ohne Home Assistant, z. B. auf einem NAS oder dem eigenen Rechner.
+#
+#   docker compose up -d
+#
+# ./data ist ein normaler Ordner neben dieser Datei — die Songs liegen dort als
+# .chordpro-Dateien. Nur vom eigenen Rechner aus erreichbar (127.0.0.1). Für
+# Geräte im WLAN: ein Token setzen und den 127.0.0.1-Teil beim Port weglassen,
+# siehe README → Options.
+services:
+  chordwright-data:
+    image: node:22-alpine
+    working_dir: /srv
+    command: node server/serve.mjs --dir /data --port 4174 --host 0.0.0.0 --insecure
+    ports:
+      - "127.0.0.1:4174:4174"
+    volumes:
+      - ./chordwright-data/server:/srv/server:ro
+      - ./data:/data
+    restart: unless-stopped

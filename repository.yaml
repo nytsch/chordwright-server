@@ -1,0 +1,5 @@
+# Home Assistant: Einstellungen → Add-ons → Add-on-Store → ⋮ → Repositories,
+# dann die URL dieses Repositorys eintragen.
+name: Chordwright
+url: https://github.com/nytsch/chordwright-server
+maintainer: Niko Krämer
