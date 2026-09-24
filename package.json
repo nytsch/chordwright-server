@@ -1,6 +1,6 @@
 {
   "name": "chordwright-server",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "A folder of .chordpro files, served to the Chordwright app — with revisions, conflict detection and a Home Assistant add-on.",
   "license": "MIT",
   "type": "module",

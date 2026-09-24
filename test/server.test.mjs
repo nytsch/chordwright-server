@@ -442,7 +442,7 @@ test('serve: https with --cert/--key, token enforced', async () => {
     { port, scheme: 'https' },
   );
   try {
-    assert.match(server.output(), /api {4}https:\/\//);
+    assert.match(server.output(), /url {4}https:\/\/[^\s]+:\d+\n/);
     assert.equal((await get(`https://127.0.0.1:${port}/api/user`)).status, 401);
     const ok = await get(`https://127.0.0.1:${port}/api/user`, { authorization: 'Bearer geheim' });
     assert.equal(ok.status, 200);
@@ -470,51 +470,69 @@ test('serve: --cert without --key is refused', async () => {
 // Home-Assistant-Add-on (chordwright-data)
 // ---------------------------------------------------------------------------
 
-test('addon: the self-signed certificate is one that browsers and openssl accept', async () => {
-  const { createSelfSigned, VALIDITY_DAYS } = await import(join(ADDON, 'selfsigned.mjs'));
+test('addon: the CA and the server certificate it issues are what browsers and openssl accept', async () => {
+  const { createCA, issueServerCert, SERVER_VALIDITY_DAYS } = await import(join(ADDON, 'certs.mjs'));
   const dir = await tempDir();
-  const { cert, key } = createSelfSigned();
-  await writeFile(join(dir, 'c.pem'), cert);
-  await writeFile(join(dir, 'k.pem'), key);
+  const ca = createCA();
+  const server = issueServerCert(ca, { dnsNames: ['homeassistant.local', 'ha.fritz.box'], ips: ['127.0.0.1', '192.168.68.123', 'fd00::5'] });
+  await writeFile(join(dir, 'ca.pem'), ca.cert);
+  await writeFile(join(dir, 'server.pem'), server.cert);
+  await writeFile(join(dir, 'server-key.pem'), server.key);
 
-  const x = new X509Certificate(cert);
-  assert.ok(x.verify(x.publicKey), 'self-signature verifies');
-  assert.equal(x.subject, 'CN=chordwright');
-  assert.equal(x.checkHost('homeassistant.local'), 'homeassistant.local');
-  assert.equal(x.checkIP('127.0.0.1'), '127.0.0.1');
+  const c = new X509Certificate(ca.cert);
+  const x = new X509Certificate(server.cert);
+  assert.equal(c.ca, true);
   assert.equal(x.ca, false);
+  assert.ok(x.checkIssued(c) && x.verify(c.publicKey), 'issued and signed by the CA');
+  assert.equal(x.checkHost('ha.fritz.box'), 'ha.fritz.box');
+  assert.equal(x.checkIP('192.168.68.123'), '192.168.68.123');
+  assert.equal(x.checkIP('fd00:0:0:0:0:0:0:5'), 'fd00:0:0:0:0:0:0:5');
   assert.deepEqual(x.keyUsage, ['1.3.6.1.5.5.7.3.1']);
   const days = (Date.parse(x.validTo) - Date.now()) / 86_400_000;
-  assert.ok(days > VALIDITY_DAYS - 1 && days <= 825, `validity ${days} days`);
+  assert.ok(days > SERVER_VALIDITY_DAYS - 1 && days <= 825, `server validity ${days} days`);
 
-  const text = execFileSync('openssl', ['x509', '-in', join(dir, 'c.pem'), '-noout', '-text'], { encoding: 'utf8' });
-  assert.match(text, /Version: 3/);
-  assert.match(text, /DNS:homeassistant\.local/);
-  assert.match(text, /TLS Web Server Authentication/);
+  // openssl agrees: the chain verifies, the CA may sign and nothing else.
+  execFileSync('openssl', ['verify', '-CAfile', join(dir, 'ca.pem'), join(dir, 'server.pem')]);
+  const caText = execFileSync('openssl', ['x509', '-in', join(dir, 'ca.pem'), '-noout', '-text'], { encoding: 'utf8' });
+  assert.match(caText, /CA:TRUE/);
+  assert.match(caText, /Certificate Sign/);
+  const text = execFileSync('openssl', ['x509', '-in', join(dir, 'server.pem'), '-noout', '-text'], { encoding: 'utf8' });
   assert.match(text, /CA:FALSE/);
-  // Key and certificate belong together: openssl checks the pair.
-  execFileSync('openssl', ['x509', '-in', join(dir, 'c.pem'), '-noout', '-checkend', '0']);
-  const pubFromCert = execFileSync('openssl', ['x509', '-in', join(dir, 'c.pem'), '-noout', '-pubkey'], { encoding: 'utf8' });
-  const pubFromKey = execFileSync('openssl', ['pkey', '-in', join(dir, 'k.pem'), '-pubout'], { encoding: 'utf8' });
+  assert.match(text, /TLS Web Server Authentication/);
+  assert.match(text, /IP Address:192\.168\.68\.123/);
+  assert.match(text, /Authority Key Identifier/);
+  const pubFromCert = execFileSync('openssl', ['x509', '-in', join(dir, 'server.pem'), '-noout', '-pubkey'], { encoding: 'utf8' });
+  const pubFromKey = execFileSync('openssl', ['pkey', '-in', join(dir, 'server-key.pem'), '-pubout'], { encoding: 'utf8' });
   assert.equal(pubFromCert, pubFromKey);
-  // And a real TLS handshake with it works (the other addon tests serve it).
 });
 
-test('addon: a self-signed certificate close to expiry is replaced', async () => {
-  const { createSelfSigned } = await import(join(ADDON, 'selfsigned.mjs'));
-  const dirs = await addonDirs();
-  const old = createSelfSigned({ now: new Date(Date.now() - 810 * 86_400_000) }); // 15 Tage Rest
-  await writeFile(join(dirs.data, 'selfsigned-cert.pem'), old.cert);
-  await writeFile(join(dirs.data, 'selfsigned-key.pem'), old.key);
-  const port = nextPort++;
-  const server = await launch([join(ADDON, 'start.mjs')], { env: addonEnv(dirs, port), port, scheme: 'https' });
-  try {
-    const now = new X509Certificate(await readFile(join(dirs.data, 'selfsigned-cert.pem')));
-    assert.ok(Date.parse(now.validTo) - Date.now() > 800 * 86_400_000, 'renewed');
-  } finally {
-    await server.stop();
-  }
-});
+/** A stand-in for the Supervisor's /network/info. */
+async function fakeSupervisor(addresses) {
+  const { createServer } = await import('node:http');
+  const state = { addresses };
+  const server = createServer((req, res) => {
+    res.writeHead(200, { 'content-type': 'application/json' });
+    res.end(JSON.stringify({
+      result: 'ok',
+      data: { interfaces: [{ interface: 'eth0', ipv4: { address: state.addresses.v4 }, ipv6: { address: state.addresses.v6 } }] },
+    }));
+  });
+  await new Promise((r) => server.listen(0, '127.0.0.1', r));
+  return { url: `http://127.0.0.1:${server.address().port}`, state, close: () => server.close() };
+}
+
+/** GET over https, trusting nothing but `ca` — what a device with the CA installed does. */
+function getTrusting(ca, url, headers = {}) {
+  return new Promise((resolve, reject) => {
+    const req = httpsRequest(url, { headers, ca }, (res) => {
+      const chunks = [];
+      res.on('data', (d) => chunks.push(d));
+      res.on('end', () => resolve({ status: res.statusCode, headers: res.headers, body: Buffer.concat(chunks) }));
+    });
+    req.on('error', reject);
+    req.end();
+  });
+}
 
 async function addonDirs() {
   const base = await tempDir();
@@ -523,43 +541,117 @@ async function addonDirs() {
   return dirs;
 }
 
-function addonEnv(dirs, port) {
-  return { ADDON_DATA_DIR: dirs.data, ADDON_SHARE_DIR: dirs.share, ADDON_SSL_DIR: dirs.ssl, ADDON_PORT: String(port) };
+function addonEnv(dirs, port, extra = {}) {
+  return { ADDON_DATA_DIR: dirs.data, ADDON_SHARE_DIR: dirs.share, ADDON_SSL_DIR: dirs.ssl, ADDON_PORT: String(port), ...extra };
 }
 
-test('addon: no options at all → token generated, kept across restarts, self-signed https', async () => {
+test('addon: no options → token, own CA, a certificate a device with the CA trusts, /ca.crt', async () => {
   const dirs = await addonDirs();
   const port = nextPort++;
-  const env = addonEnv(dirs, port);
+  const supervisor = await fakeSupervisor({ v4: ['192.168.68.123/24'], v6: ['fe80::1/64', 'fd00::5/64'] });
+  const env = addonEnv(dirs, port, { ADDON_SUPERVISOR_URL: supervisor.url });
 
   let server = await launch([join(ADDON, 'start.mjs')], { env, port, scheme: 'https' });
   let token;
+  let caPem;
+  let serverCert;
   try {
     token = (await readFile(join(dirs.data, 'token'), 'utf8')).trim();
     assert.match(token, /^[0-9a-f]{32}$/);
     assert.match(server.output(), new RegExp(`Token {4}${token}`));
-    assert.match(server.output(), /selbstsigniert/);
-    assert.equal((await get(`https://127.0.0.1:${port}/api/library`)).status, 401);
+    // The log names the real address and where the CA is.
+    assert.match(server.output(), /Adresse {2}https:\/\/192\.168\.68\.123:\d+/);
+    assert.match(server.output(), /\/ca\.crt/);
+
+    caPem = await readFile(join(dirs.data, 'ca-cert.pem'), 'utf8');
+    serverCert = await readFile(join(dirs.data, 'server-cert.pem'), 'utf8');
+    const x = new X509Certificate(serverCert);
+    assert.equal(x.checkIP('192.168.68.123'), '192.168.68.123', 'the host address from the Supervisor');
+    assert.equal(x.checkIP('fd00:0:0:0:0:0:0:5'), 'fd00:0:0:0:0:0:0:5');
+    assert.doesNotMatch(x.subjectAltName, /FE80/i, 'no link-local addresses');
+    assert.equal(x.checkHost('homeassistant.local'), 'homeassistant.local');
+
+    // The point of it all: trusting only the CA, the handshake succeeds.
+    const health = await getTrusting(caPem, `https://127.0.0.1:${port}/api/health`);
+    assert.equal(health.status, 200);
+    assert.equal(
+      (await getTrusting(caPem, `https://127.0.0.1:${port}/api/user`, { authorization: `Bearer ${token}` })).status,
+      200,
+    );
+
+    // /ca.crt: public, DER, the content type iOS installs as a profile.
+    const ca = await getTrusting(caPem, `https://127.0.0.1:${port}/ca.crt`);
+    assert.equal(ca.status, 200);
+    assert.equal(ca.headers['content-type'], 'application/x-x509-ca-cert');
+    assert.deepEqual(new X509Certificate(ca.body).raw, new X509Certificate(caPem).raw);
+    // …and as a file in share, for the Mac over Samba.
+    assert.equal(await readFile(join(dirs.share, 'chordwright', 'chordwright-ca.crt'), 'utf8'), caPem);
+
     const put = await new Promise((resolve, reject) => {
       const req = httpsRequest(`https://127.0.0.1:${port}/api/library/record/doc.x`, {
-        method: 'PUT', rejectUnauthorized: false, headers: { authorization: `Bearer ${token}` },
+        method: 'PUT', ca: caPem, headers: { authorization: `Bearer ${token}` },
       }, (res) => { res.resume(); res.on('end', () => resolve(res.statusCode)); });
       req.on('error', reject);
       req.end(doc('x'));
     });
     assert.equal(put, 204);
-    // The songs land in /share/chordwright, where Samba shows them.
     assert.match(await readFile(join(dirs.share, 'chordwright/library/songs/x.chordpro'), 'utf8'), /\{title: x\}/);
   } finally {
     await server.stop();
   }
 
-  const certBefore = await readFile(join(dirs.data, 'selfsigned-cert.pem'), 'utf8');
+  // Restart: same token, same CA, same certificate.
   server = await launch([join(ADDON, 'start.mjs')], { env, port, scheme: 'https' });
   try {
     assert.equal((await readFile(join(dirs.data, 'token'), 'utf8')).trim(), token);
-    assert.equal(await readFile(join(dirs.data, 'selfsigned-cert.pem'), 'utf8'), certBefore);
-    assert.equal((await get(`https://127.0.0.1:${port}/api/user`, { authorization: `Bearer ${token}` })).status, 200);
+    assert.equal(await readFile(join(dirs.data, 'ca-cert.pem'), 'utf8'), caPem);
+    assert.equal(await readFile(join(dirs.data, 'server-cert.pem'), 'utf8'), serverCert);
+  } finally {
+    await server.stop();
+  }
+
+  // The router hands out a new address: a new server certificate, the same CA.
+  supervisor.state.addresses = { v4: ['192.168.1.50/24'], v6: [] };
+  server = await launch([join(ADDON, 'start.mjs')], { env, port, scheme: 'https' });
+  try {
+    assert.equal(await readFile(join(dirs.data, 'ca-cert.pem'), 'utf8'), caPem, 'the installed CA stays valid');
+    const renewed = new X509Certificate(await readFile(join(dirs.data, 'server-cert.pem'), 'utf8'));
+    assert.equal(renewed.checkIP('192.168.1.50'), '192.168.1.50');
+    assert.equal((await getTrusting(caPem, `https://127.0.0.1:${port}/api/health`)).status, 200);
+  } finally {
+    await server.stop();
+    supervisor.close();
+  }
+});
+
+test('addon: extra hostnames go into the certificate; an expiring one is renewed', async () => {
+  const dirs = await addonDirs();
+  await writeFile(join(dirs.data, 'options.json'), JSON.stringify({ ssl: true, folder: 'chordwright', hostnames: ['ha.fritz.box', '10.0.0.9'] }));
+  const port = nextPort++;
+  let server = await launch([join(ADDON, 'start.mjs')], { env: addonEnv(dirs, port), port, scheme: 'https' });
+  const caPem = await readFile(join(dirs.data, 'ca-cert.pem'), 'utf8');
+  try {
+    const x = new X509Certificate(await readFile(join(dirs.data, 'server-cert.pem')));
+    assert.equal(x.checkHost('ha.fritz.box'), 'ha.fritz.box');
+    assert.equal(x.checkIP('10.0.0.9'), '10.0.0.9');
+  } finally {
+    await server.stop();
+  }
+
+  // A server certificate with 15 days left is replaced — by the same CA.
+  const { issueServerCert } = await import(join(ADDON, 'certs.mjs'));
+  const old = issueServerCert(
+    { cert: caPem, key: await readFile(join(dirs.data, 'ca-key.pem'), 'utf8') },
+    { dnsNames: ['homeassistant.local'], ips: ['127.0.0.1'], now: new Date(Date.now() - 810 * 86_400_000) },
+  );
+  await writeFile(join(dirs.data, 'server-cert.pem'), old.cert);
+  await writeFile(join(dirs.data, 'server-key.pem'), old.key);
+  server = await launch([join(ADDON, 'start.mjs')], { env: addonEnv(dirs, port), port, scheme: 'https' });
+  try {
+    const now = new X509Certificate(await readFile(join(dirs.data, 'server-cert.pem')));
+    assert.ok(Date.parse(now.validTo) - Date.now() > 800 * 86_400_000, 'renewed');
+    assert.equal(await readFile(join(dirs.data, 'ca-cert.pem'), 'utf8'), caPem);
+    assert.equal((await getTrusting(caPem, `https://127.0.0.1:${port}/api/health`)).status, 200);
   } finally {
     await server.stop();
   }
@@ -577,9 +669,11 @@ test('addon: certificates in /ssl are used, token and folder from the options', 
     const res = await get(`https://127.0.0.1:${port}/api/health`);
     assert.equal(JSON.parse(res.body).dir, join(dirs.share, 'songs-band'));
     assert.equal((await get(`https://127.0.0.1:${port}/api/user`, { authorization: 'Bearer aus-den-optionen' })).status, 200);
-    assert.doesNotMatch(server.output(), /selbstsigniert/);
+    assert.doesNotMatch(server.output(), /Chordwright-CA/);
     await assert.rejects(readFile(join(dirs.data, 'token')));
-    await assert.rejects(readFile(join(dirs.data, 'selfsigned-cert.pem')));
+    await assert.rejects(readFile(join(dirs.data, 'ca-cert.pem')));
+    // No CA of ours, so nothing to hand out.
+    assert.equal((await get(`https://127.0.0.1:${port}/ca.crt`)).status, 404);
     assert.ok(readFileSync(cert) && readFileSync(key));
   } finally {
     await server.stop();

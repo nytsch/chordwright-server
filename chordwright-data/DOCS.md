@@ -21,7 +21,7 @@ Deine Chordwright-Bibliothek liegt dann auf dem Home-Assistant-Rechner statt im 
 
 In Chordwright: **Einstellungen → Datenquelle**
 
-- **Adresse:** `https://homeassistant.local:4174`. Nimm dieselbe Adresse, unter der du Home Assistant erreichst, aber mit Port `4174` und `https`.
+- **Adresse:** eine der Adressen aus dem Protokoll, z. B. `https://192.168.1.20:4174`, ohne `/api` am Ende.
 - **Token:** den aus dem Protokoll
 - **Testen**, dann **Verbinden**. Die App lädt neu und liest und schreibt ab jetzt den Ordner auf dem Home-Assistant-Rechner.
 
@@ -35,13 +35,21 @@ Die App läuft auf GitHub Pages, also über `https`. Browser lassen eine https-S
 
 **Du hast schon Zertifikate in Home Assistant** (Add-on „Let's Encrypt" oder „Duck DNS"): Die liegen in `/ssl` als `fullchain.pem` und `privkey.pem`, und das Add-on nimmt sie automatisch. Als Adresse trägst du dann den Namen ein, für den das Zertifikat gilt, z. B. `https://deinname.duckdns.org:4174`. Heißen die Dateien anders, trag die Namen unter **Konfiguration** ein.
 
-**Du hast keine** (der Normalfall, Home Assistant unter `http://homeassistant.local:8123`): Dann erzeugt das Add-on ein eigenes, selbstsigniertes Zertifikat. Das musst du **auf jedem Gerät einmal bestätigen**:
+**Du hast keine** (der Normalfall, Home Assistant unter `http://homeassistant.local:8123`): Dann legt das Add-on eine **eigene kleine Zertifizierungsstelle** an und stellt sich damit ein Zertifikat für seine Adressen aus. Die IP-Adresse des Home-Assistant-Rechners holt es sich selbst; sie steht im Protokoll. Du installierst die Zertifizierungsstelle **einmal pro Gerät**, danach gibt es keine Warnungen mehr, auch nicht in der App auf dem Home-Bildschirm.
 
-1. Im Browser `https://homeassistant.local:4174/api/health` öffnen.
-2. Die Warnung bestätigen: Chrome *Erweitert → Weiter zu …*, Safari *Details einblenden → Diese Website besuchen*.
-3. Es erscheint eine kurze Zeile mit `"ok":true`. Danach kann die App verbinden.
+**iPhone / iPad**
 
-Auf dem iPhone merkt sich Safari diese Bestätigung nicht immer dauerhaft. Wenn die App später „offline" zeigt, Schritt 1 und 2 wiederholen. Wer das Add-on regelmäßig auf dem iPhone nutzt, fährt mit einem echten Zertifikat (Duck DNS) besser.
+1. In **Safari** `https://<Adresse aus dem Protokoll>:4174/ca.crt` öffnen. Beim ersten Mal kommt eine Warnung: *Details einblenden → Diese Website besuchen*.
+2. „Profil geladen" bestätigen, dann *Einstellungen → Profil geladen → Installieren*.
+3. *Einstellungen → Allgemein → Info → Zertifikatsvertrauenseinstellungen* → bei **Chordwright lokale CA** den Schalter einschalten. Ohne diesen Schritt geht es nicht.
+
+**Mac**
+
+Die Datei per Samba aus **share → chordwright → chordwright-ca.crt** holen (oder die Adresse oben im Browser laden), doppelklicken, in der Schlüsselbundverwaltung **Chordwright lokale CA** öffnen und unter *Vertrauen* „Immer vertrauen" wählen.
+
+**Windows / Android:** Die Datei `chordwright-ca.crt` als vertrauenswürdige Stammzertifizierungsstelle bzw. als CA-Zertifikat installieren.
+
+Die Zertifizierungsstelle bleibt dieselbe, solange du das Add-on nicht deinstallierst. Bekommt der Rechner eine neue IP-Adresse, stellt das Add-on beim nächsten Start ein neues Server-Zertifikat aus; auf den Geräten musst du nichts neu machen. Erreichst du Home Assistant unter einem weiteren Namen (z. B. `ha.fritz.box`), trag ihn unter **Konfiguration → hostnames** ein.
 
 ## Konfiguration
 
@@ -51,6 +59,7 @@ Auf dem iPhone merkt sich Safari diese Bestätigung nicht immer dauerhaft. Wenn 
 | `ssl` | an | Aus nur, wenn die App selbst über `http` läuft (z. B. `npm run dev` im LAN). |
 | `certfile` / `keyfile` | `fullchain.pem` / `privkey.pem` | Dateinamen in `/ssl` |
 | `folder` | `chordwright` | Unterordner in `share`, in dem die Bibliothek liegt |
+| `hostnames` | leer | Weitere Namen oder Adressen fürs Zertifikat, z. B. `ha.fritz.box` |
 
 Den Port änderst du unter **Netzwerk**. In der App trägst du dann diesen Port ein.
 
@@ -78,6 +87,6 @@ Falls Home Assistant das Repository nicht erreicht (etwa weil es privat ist): pe
 
 ## Wenn etwas nicht geht
 
-- **„Testen" schlägt fehl:** Läuft das Add-on (Protokoll)? Hast du das Zertifikat auf diesem Gerät bestätigt? Steht in der Adresse `https`?
+- **„Testen" schlägt fehl:** Läuft das Add-on (Protokoll)? Ist die Zertifizierungsstelle auf diesem Gerät installiert und (iPhone) in den Zertifikatsvertrauenseinstellungen eingeschaltet? Steht die Adresse im Protokoll unter „Gilt für"? Steht in der Adresse `https`?
 - **Der Token wird abgelehnt:** Den Token noch einmal aus dem Protokoll kopieren, ohne Leerzeichen.
 - **Zwei Geräte haben denselben Song geändert:** Beim Songtext fragt die App, welche Fassung gilt, oder behält beide. Einstellungen, Setlists und Tags führt sie selbst zusammen und fragt nur nach, wenn beide dasselbe Feld verschieden gesetzt haben.

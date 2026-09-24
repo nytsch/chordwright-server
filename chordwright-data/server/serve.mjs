@@ -28,7 +28,8 @@
  *   GET    /api/events             → SSE: {"db","key","client"} on every change
  *   GET    /api/health             → { ok, databases, dir }
  *
- * `--cert <pem> --key <pem>` serves https instead of http.
+ * `--cert <pem> --key <pem>` serves https instead of http; `--ca-file <pem>`
+ * hands out the authority that signed it at GET /ca.crt.
  */
 
 import { createServer } from 'node:http';
@@ -38,7 +39,7 @@ import { join, resolve } from 'node:path';
 import { createStore, DATABASES, isValidKey } from './store.mjs';
 
 function parseArgs(argv) {
-  const args = { dir: './data', port: 4174, host: '127.0.0.1', token: '', insecure: false, cert: '', key: '' };
+  const args = { dir: './data', port: 4174, host: '127.0.0.1', token: '', insecure: false, cert: '', key: '', 'ca-file': '' };
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i];
     if (arg === '--insecure') args.insecure = true;
@@ -72,6 +73,16 @@ if (Boolean(args.cert) !== Boolean(args.key)) {
   process.exit(1);
 }
 const tls = args.cert ? { cert: readFileSync(args.cert), key: readFileSync(args.key) } : null;
+
+// The certificate authority that signed `--cert`, handed out at /ca.crt so a
+// device can install it once and trust this server from then on — the only
+// way an app on an iPhone home screen ever will. DER, with the content type
+// iOS answers with "install profile". Public, like /api/health: a CA
+// certificate is not a secret, and a device that does not trust the server
+// yet has no way to send a token over it anyway.
+const caDer = args['ca-file']
+  ? Buffer.from(readFileSync(args['ca-file'], 'utf8').replace(/-----[^-]+-----|\s+/g, ''), 'base64')
+  : null;
 
 // ---------------------------------------------------------------------------
 // Change notification. Two sources: writes through this server, and edits made
@@ -155,6 +166,14 @@ async function handle(req, res) {
 
   const url = new URL(req.url, 'http://localhost');
   const parts = url.pathname.split('/').filter(Boolean);
+  if (caDer && req.method === 'GET' && url.pathname === '/ca.crt') {
+    res.writeHead(200, {
+      'content-type': 'application/x-x509-ca-cert',
+      'content-disposition': 'attachment; filename="chordwright-ca.crt"',
+      'cache-control': 'no-store',
+    });
+    return res.end(caDer);
+  }
   if (parts[0] !== 'api') return send(res, 404, { error: 'not found' });
 
   if (parts[1] === 'health') {
@@ -239,6 +258,7 @@ watchFiles();
 server.listen(args.port, args.host, () => {
   console.log(`chordwright serve`);
   console.log(`  data   ${root}`);
-  console.log(`  api    ${tls ? 'https' : 'http'}://${args.host}:${args.port}/api`);
+  // Without /api: this is what goes into the app, which adds the paths itself.
+  console.log(`  url    ${tls ? 'https' : 'http'}://${args.host}:${args.port}`);
   console.log(`  auth   ${args.token ? 'token required' : 'none (loopback only)'}`);
 });

@@ -1,7 +1,7 @@
 # Home-Assistant-Add-on für den Chordwright-Datenserver (server/serve.mjs).
 # Anleitung: DOCS.md in diesem Ordner, in Home Assistant unter „Dokumentation".
 name: Chordwright Data
-version: "1.0.0"
+version: "1.1.0"
 slug: chordwright_data
 description: Deine Chordwright-Bibliothek als Ordner mit .chordpro-Dateien.
 url: https://github.com/nytsch/chordwright-server
@@ -9,6 +9,9 @@ arch:
   - aarch64
   - amd64
 startup: application
+# Nur für eine Frage an den Supervisor: die IP-Adressen des Rechners, damit sie
+# im Zertifikat stehen.
+hassio_api: true
 boot: auto
 ports:
   4174/tcp: 4174
@@ -27,9 +30,13 @@ options:
   certfile: fullchain.pem
   keyfile: privkey.pem
   folder: chordwright
+  # Weitere Namen oder Adressen fürs Zertifikat, z. B. ha.fritz.box
+  hostnames: []
 schema:
   token: password?
   ssl: bool
   certfile: str
   keyfile: str
   folder: match(^[A-Za-z0-9][A-Za-z0-9._-]*$)
+  hostnames:
+    - str

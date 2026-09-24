@@ -80,6 +80,7 @@ wrote it.
 | `--token` | none | required as `Authorization: Bearer …` or `?token=` |
 | `--insecure` | off | allow a non-loopback host with no token |
 | `--cert`, `--key` | none | PEM files; serve https instead of http (both or neither) |
+| `--ca-file` | none | PEM of the CA that signed `--cert`, served at `GET /ca.crt` (public) |
 
 Binding to anything but loopback without a token is **refused**, not warned
 about: an open port in a venue's wifi puts every song within reach of anyone on
@@ -92,7 +93,11 @@ node chordwright-data/server/serve.mjs --dir ./data --host 0.0.0.0 --token $(ope
 **https:** the app is usually opened over `https://`, and a browser will not let
 an https page talk to an `http://` server anywhere but on the same machine
 (mixed content). On a network, pass `--cert` and `--key`. The Home Assistant
-add-on does this for you — with the certificates in `/ssl`, or a self-signed one.
+add-on does this for you — with the certificates in `/ssl`, or with a small
+certificate authority of its own: it issues the server a certificate for its
+actual addresses and hands the CA out at `/ca.crt`, to be installed once per
+device. Unlike a self-signed certificate that has to be clicked through, that
+also works for an app on an iPhone home screen.
 
 ## API
 
@@ -104,6 +109,7 @@ GET    /api/:db/record/:key       → { value, rev } | 404 { rev: null }
 PUT    /api/:db/record/:key       ← the raw value string            → 204, ETag
 DELETE /api/:db/record/:key                                          → 204
 GET    /api/events                → SSE: {"db","key","client"} per change
+GET    /ca.crt                    → the CA certificate, DER   (public; only with --ca-file)
 ```
 
 `:db` is `library` or `user`. Keys are file names: letters, digits, `.`, `_`,
