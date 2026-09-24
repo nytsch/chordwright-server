@@ -1,7 +1,7 @@
 # Home-Assistant-Add-on für den Chordwright-Datenserver (server/serve.mjs).
 # Anleitung: DOCS.md in diesem Ordner, in Home Assistant unter „Dokumentation".
 name: Chordwright Data
-version: "1.2.0"
+version: "1.0.0"
 slug: chordwright_data
 description: Deine Chordwright-Bibliothek als Ordner mit .chordpro-Dateien.
 url: https://github.com/nytsch/chordwright-server
