@@ -122,7 +122,9 @@ async function resolveTls(options) {
 
   // Das Server-Zertifikat: für jede Adresse, unter der man ihn erreicht. Ändert
   // sich eine (neue IP im Router), wird es neu ausgestellt — die CA bleibt.
-  const configured = (options.hostnames ?? []).map((h) => String(h).trim()).filter(Boolean);
+  // Aus den Optionen (Home Assistant) oder CHORDWRIGHT_HOSTNAMES (docker compose).
+  const fromEnv = (process.env.CHORDWRIGHT_HOSTNAMES ?? '').split(',');
+  const configured = [...(options.hostnames ?? []), ...fromEnv].map((h) => String(h).trim()).filter(Boolean);
   const all = [...new Set([...DEFAULT_NAMES, '127.0.0.1', ...(await hostAddresses()), ...configured])];
   const names = all.filter((h) => !isIp(h));
   const ips = all.filter(isIp);
@@ -159,11 +161,16 @@ if (tls?.own) {
   }
 }
 
-const addresses = tls?.own ? [...tls.ips.filter((ip) => ip !== '127.0.0.1'), 'homeassistant.local'] : [];
+// Unter Home Assistant gibt es den Supervisor-Token; sonst (docker compose,
+// von Hand) ist es der eigene Rechner, und Samba gibt es nicht.
+const inHomeAssistant = Boolean(process.env.SUPERVISOR_TOKEN);
+const addresses = tls?.own
+  ? [...tls.ips.filter((ip) => ip !== '127.0.0.1'), inHomeAssistant ? 'homeassistant.local' : 'localhost']
+  : [];
 const rule = '-'.repeat(60);
 console.log(rule);
 console.log('Chordwright Data');
-console.log(`  Ordner   ${dir}  (per Samba: share/${folder})`);
+console.log(`  Ordner   ${dir}${inHomeAssistant ? `  (per Samba: share/${folder})` : ''}`);
 if (addresses.length > 0) {
   for (const a of addresses) console.log(`  Adresse  ${scheme}://${a.includes(':') ? `[${a}]` : a}:${PORT}`);
 } else {
@@ -172,7 +179,8 @@ if (addresses.length > 0) {
 console.log(`  Token    ${token}${generated ? '   (automatisch erzeugt)' : ''}`);
 if (tls?.own) {
   console.log('  Zertifikat: von der eigenen Chordwright-CA — einmal pro Gerät installieren:');
-  console.log(`    ${scheme}://${addresses[0] ?? '<Adresse>'}:${PORT}/ca.crt   (oder per Samba: share/${folder}/chordwright-ca.crt)`);
+  const caFile = inHomeAssistant ? `per Samba: share/${folder}/chordwright-ca.crt` : 'oder die Datei chordwright-ca.crt im Datenordner';
+  console.log(`    ${scheme}://${addresses[0] ?? '<Adresse>'}:${PORT}/ca.crt   (${caFile})`);
   console.log(`  Gilt für: ${[...tls.names, ...tls.ips].join(', ')}`);
 }
 if (!tls) console.log('  Ohne ssl erreicht die App auf GitHub Pages (https) den Server nicht.');

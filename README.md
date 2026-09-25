@@ -25,8 +25,15 @@ node chordwright-data/server/serve.mjs --dir ./data
 **Docker Compose** — `compose.yaml` in this repository, songs in `./data`:
 
 ```sh
-docker compose up -d
+docker compose up -d --build
+docker compose logs      # the token, and where the CA certificate is
 ```
+
+Same image and start script as the Home Assistant add-on, so it speaks https
+with its own small certificate authority. Install `./data/chordwright-ca.crt`
+once (macOS: Keychain → *Always Trust*), then connect the app to
+`https://localhost:4174`. Plain http would not do: Safari lets no https page
+talk to `http://localhost`.
 
 **Home Assistant** — add this repository under *Settings → Add-ons → Add-on
 Store → ⋮ → Repositories*, then install **Chordwright Data**. Step by step, in

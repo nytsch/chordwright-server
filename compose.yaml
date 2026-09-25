@@ -1,19 +1,31 @@
-# Der Server ohne Home Assistant, z. B. auf einem NAS oder dem eigenen Rechner.
+# Der Server ohne Home Assistant, z. B. auf dem eigenen Rechner oder einem NAS.
 #
-#   docker compose up -d
+#   docker compose up -d --build
+#   docker compose logs          → Token und die Adresse der CA
 #
-# ./data ist ein normaler Ordner neben dieser Datei — die Songs liegen dort als
-# .chordpro-Dateien. Nur vom eigenen Rechner aus erreichbar (127.0.0.1). Für
-# Geräte im WLAN: ein Token setzen und den 127.0.0.1-Teil beim Port weglassen,
-# siehe README → Options.
+# Dasselbe Image und Startskript wie das Home-Assistant-Add-on: https mit
+# einer eigenen kleinen Zertifizierungsstelle. Die installierst du einmal
+# (./data/chordwright-ca.crt → Schlüsselbund → „Immer vertrauen"), danach
+# verbindet sich die App mit https://localhost:4174 — auch in Safari, das
+# einer https-Seite keine Anfragen an http://localhost erlaubt.
+#
+#   ./data    die Songs als .chordpro-Dateien, dazu chordwright-ca.crt
+#   ./state   Token, CA-Schlüssel, Zertifikat — privat, nicht teilen
+#
+# Nur vom eigenen Rechner aus erreichbar (127.0.0.1). Für Geräte im WLAN den
+# 127.0.0.1-Teil beim Port weglassen und den Namen oder die IP des Rechners
+# unter CHORDWRIGHT_HOSTNAMES eintragen, damit sie im Zertifikat stehen.
 services:
   chordwright-data:
-    image: node:22-alpine
-    working_dir: /srv
-    command: node server/serve.mjs --dir /data --port 4174 --host 0.0.0.0 --insecure
+    build: ./chordwright-data
+    environment:
+      ADDON_DATA_DIR: /state
+      ADDON_SHARE_DIR: /share
+      ADDON_SSL_DIR: /no-ssl
+      CHORDWRIGHT_HOSTNAMES: ""   # z. B. "mein-mac.local,192.168.1.20"
     ports:
       - "127.0.0.1:4174:4174"
     volumes:
-      - ./chordwright-data/server:/srv/server:ro
-      - ./data:/data
+      - ./data:/share/chordwright
+      - ./state:/state
     restart: unless-stopped
