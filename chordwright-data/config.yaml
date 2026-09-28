@@ -1,7 +1,7 @@
 # Home-Assistant-Add-on für den Chordwright-Datenserver (server/serve.mjs).
 # Anleitung: DOCS.md in diesem Ordner, in Home Assistant unter „Dokumentation".
 name: Chordwright Data
-version: "1.1.0"
+version: "1.2.0"
 slug: chordwright_data
 description: Deine Chordwright-Bibliothek als Ordner mit .chordpro-Dateien.
 url: https://github.com/nytsch/chordwright-server
@@ -32,6 +32,11 @@ options:
   folder: chordwright
   # Weitere Namen oder Adressen fürs Zertifikat, z. B. ha.fritz.box
   hostnames: []
+  # Sicherungen der Bibliothek unter share/<ordner>/backups: alle so viele
+  # Stunden, wenn sich etwas geändert hat (0 = nur auf Knopfdruck in der App).
+  backup_every_hours: 24
+  # So viele automatische Sicherungen bleiben; die ältesten gehen.
+  backup_keep: 14
 schema:
   token: password?
   ssl: bool
@@ -40,3 +45,5 @@ schema:
   folder: match(^[A-Za-z0-9][A-Za-z0-9._-]*$)
   hostnames:
     - str
+  backup_every_hours: int(0,)
+  backup_keep: int(1,)

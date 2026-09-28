@@ -18,6 +18,7 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { X509Certificate } from 'node:crypto';
 import { createStore } from '../chordwright-data/server/store.mjs';
+import { createBackups } from '../chordwright-data/server/backups.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const ADDON = join(here, '..', 'chordwright-data');
@@ -298,6 +299,127 @@ test('store: readAllVersioned gives a revision for every record', async () => {
 // ---------------------------------------------------------------------------
 // serve.mjs
 // ---------------------------------------------------------------------------
+
+test('backups: a snapshot copies both trees and counts songs and sets', async () => {
+  const dir = await tempDir();
+  const store = createStore(dir);
+  await store.ensureLayout();
+  await store.write('library', 'doc.a', doc('a'));
+  await store.write('library', 'doc.b', doc('b'));
+  await store.write('user', 'setlists', JSON.stringify({ v: 1, data: [{ id: 's1' }, { id: 's2' }, { id: 's3' }] }));
+  const backups = createBackups(dir);
+
+  const entry = await backups.create();
+  assert.equal(entry.reason, 'manual');
+  assert.equal(entry.songs, 2);
+  assert.equal(entry.sets, 3);
+  assert.match(entry.id, /^\d{8}-\d{6}$/);
+  const copy = await readFile(join(dir, 'backups', entry.id, 'library', 'songs', 'a.chordpro'), 'utf8');
+  assert.equal(copy, '{title: a}\n[C]la');
+  assert.deepEqual((await backups.list()).map((b) => b.id), [entry.id]);
+  // The snapshot folder is not part of the library.
+  assert.deepEqual(Object.keys(await store.readAll('library')).sort(), ['doc.a', 'doc.b']);
+});
+
+test('backups: the schedule skips an unchanged or empty library and keeps the newest', async () => {
+  const dir = await tempDir();
+  const store = createStore(dir);
+  await store.ensureLayout();
+  let clock = Date.parse('2026-01-01T00:00:00Z');
+  const hour = 60 * 60 * 1000;
+  const backups = createBackups(dir, { keep: 2, now: () => new Date(clock) });
+
+  assert.equal(await backups.createIfDue(24 * hour), null, 'empty library');
+  await store.write('library', 'doc.a', doc('a', 'eins'));
+  const first = await backups.createIfDue(24 * hour);
+  assert.equal(first.reason, 'auto');
+  clock += hour;
+  await store.write('library', 'doc.a', doc('a', 'zwei'));
+  assert.equal(await backups.createIfDue(24 * hour), null, 'not due yet');
+  clock += 24 * hour;
+  assert.ok(await backups.createIfDue(24 * hour));
+  clock += 24 * hour;
+  assert.equal(await backups.createIfDue(24 * hour), null, 'nothing changed');
+  const manual = await backups.create('manual');
+  for (const text of ['drei', 'vier']) {
+    clock += 24 * hour;
+    await store.write('library', 'doc.a', doc('a', text));
+    assert.ok(await backups.createIfDue(24 * hour));
+  }
+  const left = await backups.list();
+  assert.equal(left.filter((b) => b.reason === 'auto').length, 2);
+  assert.ok(left.some((b) => b.id === manual.id), 'a manual snapshot does not age out');
+  assert.ok(!left.some((b) => b.id === first.id));
+  assert.deepEqual(left.map((b) => b.createdAt), [...left.map((b) => b.createdAt)].sort().reverse());
+});
+
+test('backups: restore puts the snapshot back and keeps what was there as its own', async () => {
+  const dir = await tempDir();
+  const store = createStore(dir);
+  await store.ensureLayout();
+  await store.write('library', 'doc.a', doc('a', 'alt'));
+  await store.write('user', 'tags', JSON.stringify({ v: 1, data: ['x'] }));
+  const backups = createBackups(dir);
+  const snap = await backups.create();
+
+  await store.write('library', 'doc.a', doc('a', 'neu'));
+  await store.write('library', 'doc.b', doc('b'));
+  await store.remove('user', 'tags');
+
+  const result = await backups.restore(snap.id);
+  assert.equal(result.restored.id, snap.id);
+  assert.equal(result.safety.reason, 'restore');
+  const lib = await store.readAll('library');
+  assert.deepEqual(Object.keys(lib).sort(), ['doc.a']);
+  assert.equal(JSON.parse(lib['doc.a']).data.text, 'alt');
+  assert.ok(await store.read('user', 'tags'));
+  // …and the safety snapshot undoes the restore.
+  await backups.restore(result.safety.id);
+  assert.deepEqual(Object.keys(await store.readAll('library')).sort(), ['doc.a', 'doc.b']);
+
+  assert.equal(await backups.restore('../library'), null);
+  assert.equal(await backups.restore('20990101-000000'), null);
+  assert.equal(await backups.remove(snap.id), true);
+  assert.equal(await backups.remove(snap.id), false);
+});
+
+test('serve: backups over HTTP — list, create, restore, delete, token enforced', async () => {
+  const dir = await tempDir();
+  const port = nextPort++;
+  const server = await launch(
+    [join(SERVER, 'serve.mjs'), '--dir', dir, '--port', String(port), '--token', 't', '--backup-every', '0'],
+    { port },
+  );
+  const base = `http://127.0.0.1:${port}/api`;
+  const auth = { authorization: 'Bearer t' };
+  try {
+    assert.equal((await (await fetch(`${base}/health`)).json()).backups, true);
+    assert.equal((await fetch(`${base}/backups`)).status, 401);
+    const empty = await (await fetch(`${base}/backups`, { headers: auth })).json();
+    assert.deepEqual(empty, { backups: [], everyHours: 0, keep: 14 });
+
+    await fetch(`${base}/library/record/doc.a`, { method: 'PUT', headers: auth, body: doc('a', 'alt') });
+    const created = await fetch(`${base}/backups`, { method: 'POST', headers: auth });
+    assert.equal(created.status, 201);
+    const entry = await created.json();
+    assert.equal(entry.songs, 1);
+
+    await fetch(`${base}/library/record/doc.a`, { method: 'PUT', headers: auth, body: doc('a', 'neu') });
+    const restored = await fetch(`${base}/backups/${entry.id}/restore`, { method: 'POST', headers: auth });
+    assert.equal(restored.status, 200);
+    const read = await (await fetch(`${base}/library/record/doc.a`, { headers: auth })).json();
+    assert.equal(JSON.parse(read.value).data.text, 'alt');
+    assert.equal((await (await fetch(`${base}/backups`, { headers: auth })).json()).backups.length, 2);
+
+    assert.equal((await fetch(`${base}/backups/${entry.id}`, { method: 'DELETE', headers: auth })).status, 204);
+    assert.equal((await fetch(`${base}/backups/${entry.id}`, { method: 'DELETE', headers: auth })).status, 404);
+    assert.equal((await fetch(`${base}/backups/nope/restore`, { method: 'POST', headers: auth })).status, 404);
+    const preflight = await get(`${base}/backups`, {}, 'OPTIONS');
+    assert.match(preflight.headers['access-control-allow-methods'], /POST/);
+  } finally {
+    await server.stop();
+  }
+});
 
 test('serve: If-Match / If-None-Match over HTTP, 412 with the current state', async () => {
   const dir = await tempDir();

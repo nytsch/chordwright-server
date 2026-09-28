@@ -59,6 +59,8 @@ Die Zertifizierungsstelle bleibt dieselbe, solange du das Add-on nicht deinstall
 | `ssl` | an | Aus nur, wenn die App selbst über `http` läuft (z. B. `npm run dev` im LAN). |
 | `certfile` / `keyfile` | `fullchain.pem` / `privkey.pem` | Dateinamen in `/ssl` |
 | `folder` | `chordwright` | Unterordner in `share`, in dem die Bibliothek liegt |
+| `backup_every_hours` | `24` | Alle so viele Stunden eine Sicherung, wenn sich etwas geändert hat. `0`: nur auf Knopfdruck |
+| `backup_keep` | `14` | So viele automatische Sicherungen bleiben |
 | `hostnames` | leer | Weitere Namen oder Adressen fürs Zertifikat, z. B. `ha.fritz.box` |
 
 Den Port änderst du unter **Netzwerk**. In der App trägst du dann diesen Port ein.
@@ -71,11 +73,22 @@ Per Samba unter **share → chordwright**:
 library/songs/*.chordpro   die Songs, in jedem Editor bearbeitbar
 library/index.json         Titel, Tonart, Tempo
 user/                      Capo, Abläufe, Setlists, Tags
+backups/                   Sicherungen, je ein Ordner mit Datum
 ```
 
 Speicherst du einen Song, sieht eine offene App die Änderung sofort. Legst du eine neue `.chordpro`-Datei ab, erscheint sie beim nächsten Start der App als Song.
 
-**Backup:** Die Songs landen in Home-Assistant-Sicherungen, wenn darin der Ordner „Share" mitgesichert wird.
+## Sicherungen
+
+Das Add-on sichert Bibliothek, Abläufe und Einstellungen selbst, nach `share/chordwright/backups/`:
+
+- **Automatisch** alle `backup_every_hours` Stunden, aber nur, wenn sich seit der letzten Sicherung etwas geändert hat. Die neuesten `backup_keep` bleiben.
+- **Auf Knopfdruck** in der App unter *Einstellungen → Sicherung → Auf dem Server*. Diese bleiben, bis du sie löschst.
+- **Vor jedem Wiederherstellen** sichert der Server den Stand davor, damit sich auch das rückgängig machen lässt.
+
+Jede Sicherung ist ein normaler Ordner. Einen einzelnen Song holst du per Samba zurück, indem du seine Datei aus `backups/<datum>/library/songs/` nach `library/songs/` kopierst.
+
+Die Sicherungen liegen auf demselben Rechner wie die Bibliothek. Gegen einen Ausfall des Rechners hilft nur eine Kopie woanders hin: Die Songs und die Sicherungen landen in Home-Assistant-Sicherungen, wenn darin der Ordner „Share" mitgesichert wird.
 
 ## Aktualisieren
 

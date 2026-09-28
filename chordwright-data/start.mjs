@@ -194,6 +194,9 @@ const serverArgs = [
   '--host', '0.0.0.0',
   '--token', token,
 ];
+// Ältere Optionen kennen die beiden nicht; dann gilt der Standard des Servers.
+if (options.backup_every_hours !== undefined) serverArgs.push('--backup-every', String(options.backup_every_hours));
+if (options.backup_keep !== undefined) serverArgs.push('--backup-keep', String(options.backup_keep));
 if (tls) serverArgs.push('--cert', tls.cert, '--key', tls.key);
 if (tls?.own) serverArgs.push('--ca-file', tls.ca);
 
