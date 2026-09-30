@@ -40,7 +40,7 @@ const DEFAULT_ENVELOPE_VERSION = 1;
  * `.tmp`, so neither `readAll` nor `keyForPath` mistakes it for a record.
  */
 let tmpCounter = 0;
-async function writeAtomic(path, body) {
+export async function writeAtomic(path, body) {
   const tmp = join(dirname(path), `.${basename(path)}.${process.pid}.${++tmpCounter}.tmp`);
   try {
     await writeFile(tmp, body);

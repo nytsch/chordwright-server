@@ -26,10 +26,23 @@
  * now, so the client can put both versions in front of the user. Without
  * either header a write is unconditional, as it always was.
  *   GET    /api/events             → SSE: {"db","key","client"} on every change
- *   GET    /api/health             → { ok, databases, dir }
+ *   GET    /api/health             → { ok, databases, dir, revisions, backups, changes }
+ *   GET    /api/changes?limit=50   → { changes: [{ db, key, at, by, action }] }, newest first
+ *   GET    /api/changes?db=&key=   → { change: { at, by, action } | null }
+ *   GET    /api/backups            → { backups: [...], everyHours, keep }
+ *   POST   /api/backups            → a snapshot now → 201 { id, createdAt, … }
+ *   POST   /api/backups/:id/restore → { restored, safety }
+ *   DELETE /api/backups/:id
  *
  * `--cert <pem> --key <pem>` serves https instead of http; `--ca-file <pem>`
  * hands out the authority that signed it at GET /ca.crt.
+ *
+ * Writes may carry `X-Chordwright-User: <name, URI-encoded>`; reads of a
+ * record and `?revs=1` then say who changed it last and when (changes.mjs).
+ *
+ * `--backup-every <hours>` (default 24, 0 = never) takes a snapshot on that
+ * schedule when something changed; `--backup-keep <n>` (default 14) is how many
+ * of those stay. See backups.mjs.
  */
 
 import { createServer } from 'node:http';
@@ -37,21 +50,57 @@ import { createServer as createSecureServer } from 'node:https';
 import { readFileSync, watch } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { createStore, DATABASES, isValidKey } from './store.mjs';
+import { createBackups } from './backups.mjs';
+import { createJournal } from './changes.mjs';
 
 function parseArgs(argv) {
-  const args = { dir: './data', port: 4174, host: '127.0.0.1', token: '', insecure: false, cert: '', key: '', 'ca-file': '' };
+  const args = {
+    dir: './data',
+    port: 4174,
+    host: '127.0.0.1',
+    token: '',
+    insecure: false,
+    cert: '',
+    key: '',
+    'ca-file': '',
+    'backup-every': 24,
+    'backup-keep': 14,
+  };
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i];
     if (arg === '--insecure') args.insecure = true;
     else if (arg.startsWith('--')) args[arg.slice(2)] = argv[++i];
   }
   args.port = Number(args.port) || 4174;
+  const every = Number(args['backup-every']);
+  args['backup-every'] = Number.isFinite(every) && every >= 0 ? every : 24;
+  args['backup-keep'] = Math.max(1, Math.floor(Number(args['backup-keep'])) || 14);
   return args;
 }
 
 const args = parseArgs(process.argv.slice(2));
 const root = resolve(args.dir);
 const store = createStore(root);
+const backups = createBackups(root, { keep: args['backup-keep'] });
+const journal = createJournal(root);
+
+/**
+ * The name the app sends with its writes. Encoded by the client, because a
+ * header only carries Latin-1 and people are called Jürgen.
+ */
+function userOf(req) {
+  const raw = req.headers['x-chordwright-user'];
+  if (typeof raw !== 'string' || !raw) return null;
+  try {
+    return decodeURIComponent(raw);
+  } catch {
+    return raw;
+  }
+}
+
+// A restore writes the files itself; the watcher would book each one as an
+// edit by hand. Until then, it is the restore's.
+let restoringUntil = 0;
 
 // Binding to anything but loopback puts every song in the venue's wifi within
 // reach of anyone on it. Refuse rather than warn: a warning scrolls past.
@@ -113,7 +162,12 @@ function watchFiles() {
         if (!found) return;
         // A write we just made comes back through the watcher too. The client id
         // rides along so the tab that wrote is not told about its own change.
-        const client = recentSelfWrites.get(`${found.db}/${found.key}`) ?? null;
+        const stamp = `${found.db}/${found.key}`;
+        const client = recentSelfWrites.get(stamp) ?? null;
+        // Not ours and not a restore: someone saved the file by hand.
+        if (!recentSelfWrites.has(stamp) && Date.now() > restoringUntil) {
+          void journal.record({ db: found.db, key: found.key, action: 'file' });
+        }
         broadcast(found.db, found.key, client);
       });
     } catch (err) {
@@ -129,9 +183,9 @@ function send(res, status, body, headers = {}) {
   res.writeHead(status, {
     'content-type': 'application/json; charset=utf-8',
     'access-control-allow-origin': '*',
-    'access-control-allow-headers': 'authorization, content-type, x-chordwright-client, if-match, if-none-match',
+    'access-control-allow-headers': 'authorization, content-type, x-chordwright-client, x-chordwright-user, if-match, if-none-match',
     'access-control-expose-headers': 'etag',
-    'access-control-allow-methods': 'GET, PUT, DELETE, OPTIONS',
+    'access-control-allow-methods': 'GET, PUT, POST, DELETE, OPTIONS',
     'cache-control': 'no-store',
     ...headers,
   });
@@ -177,7 +231,15 @@ async function handle(req, res) {
   if (parts[0] !== 'api') return send(res, 404, { error: 'not found' });
 
   if (parts[1] === 'health') {
-    return send(res, 200, { ok: true, databases: DATABASES, dir: root, watching: listeners.size, revisions: true });
+    return send(res, 200, {
+      ok: true,
+      databases: DATABASES,
+      dir: root,
+      watching: listeners.size,
+      revisions: true,
+      backups: true,
+      changes: true,
+    });
   }
   if (!authorised(req)) return send(res, 401, { error: 'unauthorised' });
 
@@ -199,12 +261,27 @@ async function handle(req, res) {
     return undefined;
   }
 
+  if (parts[1] === 'backups') return handleBackups(req, res, parts.slice(2));
+  if (parts[1] === 'changes' && parts.length === 2 && req.method === 'GET') {
+    const db = url.searchParams.get('db');
+    const key = url.searchParams.get('key');
+    if (db !== null || key !== null) {
+      if (!DATABASES.includes(db) || !isValidKey(key)) return send(res, 400, { error: 'bad db or key' });
+      return send(res, 200, { change: await journal.of(db, key) });
+    }
+    const limit = Math.min(500, Math.max(1, Number(url.searchParams.get('limit')) || 50));
+    return send(res, 200, { changes: await journal.recent(limit) });
+  }
+
   const db = parts[1];
   if (!DATABASES.includes(db)) return send(res, 404, { error: 'unknown database' });
 
   try {
     if (parts.length === 2 && req.method === 'GET') {
-      if (url.searchParams.get('revs') === '1') return send(res, 200, await store.readAllVersioned(db));
+      if (url.searchParams.get('revs') === '1') {
+        const [versioned, changes] = await Promise.all([store.readAllVersioned(db), journal.forDb(db)]);
+        return send(res, 200, { ...versioned, changes });
+      }
       return send(res, 200, await store.readAll(db));
     }
 
@@ -215,12 +292,14 @@ async function handle(req, res) {
     const client = req.headers['x-chordwright-client'] ?? null;
 
     if (req.method === 'GET') {
-      const { value, rev } = await store.readVersioned(db, key);
+      const [{ value, rev }, change] = await Promise.all([store.readVersioned(db, key), journal.of(db, key)]);
       // `rev: null` on a miss too: it tells a client this server keeps
-      // revisions even before it has read a single record that exists.
+      // revisions even before it has read a single record that exists. The
+      // last change goes along either way: a removed record was removed by
+      // someone.
       return value === null
-        ? send(res, 404, { error: 'no such record', rev: null })
-        : send(res, 200, { value, rev }, { etag: `"${rev}"` });
+        ? send(res, 404, { error: 'no such record', rev: null, change })
+        : send(res, 200, { value, rev, change }, { etag: `"${rev}"` });
     }
 
     if (req.method === 'PUT' || req.method === 'DELETE') {
@@ -239,6 +318,7 @@ async function handle(req, res) {
         recentSelfWrites.delete(stamp);
         return send(res, 412, { value: result.value, rev: result.rev });
       }
+      void journal.record({ db, key, by: userOf(req), action: req.method === 'PUT' ? 'write' : 'remove' });
       broadcast(db, key, client);
       return send(res, 204, undefined, result.rev ? { etag: `"${result.rev}"` } : {});
     }
@@ -250,10 +330,72 @@ async function handle(req, res) {
   }
 }
 
+async function handleBackups(req, res, rest) {
+  try {
+    if (rest.length === 0 && req.method === 'GET') {
+      const all = await backups.list();
+      return send(res, 200, { backups: all, everyHours: args['backup-every'], keep: args['backup-keep'] });
+    }
+    if (rest.length === 0 && req.method === 'POST') {
+      const entry = await backups.create('manual');
+      console.log(`Backup ${entry.id} (manual): ${entry.songs} songs, ${entry.sets} sets`);
+      return send(res, 201, entry);
+    }
+    if (rest.length === 2 && rest[1] === 'restore' && req.method === 'POST') {
+      restoringUntil = Infinity;
+      let result;
+      try {
+        result = await backups.restore(decodeURIComponent(rest[0]));
+      } finally {
+        // The watcher reports a little after the write; give it that long.
+        restoringUntil = Date.now() + 2_000;
+      }
+      if (!result) return send(res, 404, { error: 'no such backup' });
+      const by = userOf(req);
+      for (const path of result.changed) {
+        const found = store.keyForPath(path);
+        if (found) void journal.record({ ...found, by, action: 'restore', listed: false });
+      }
+      void journal.record({ db: '*', key: result.restored.id, by, action: 'restore' });
+      console.log(`Restored backup ${result.restored.id}; what was there before is backup ${result.safety.id}`);
+      // The watcher reports every file on its own; this tells each app that
+      // the whole database moved, so it reads it again in one go.
+      for (const db of DATABASES) broadcast(db, null, req.headers['x-chordwright-client'] ?? null);
+      return send(res, 200, result);
+    }
+    if (rest.length === 1 && req.method === 'DELETE') {
+      return (await backups.remove(decodeURIComponent(rest[0])))
+        ? send(res, 204)
+        : send(res, 404, { error: 'no such backup' });
+    }
+    return send(res, rest.length > 2 ? 404 : 405, { error: rest.length > 2 ? 'not found' : 'method not allowed' });
+  } catch (err) {
+    console.error(err);
+    return send(res, 500, { error: String(err.message ?? err) });
+  }
+}
+
+/**
+ * The schedule. Checked every hour rather than slept for `every` hours: a
+ * server that restarts daily would otherwise never reach the end of a day.
+ */
+function scheduleBackups() {
+  const every = args['backup-every'];
+  if (!every) return;
+  const check = () =>
+    backups
+      .createIfDue(every * 60 * 60 * 1000)
+      .then((entry) => entry && console.log(`Backup ${entry.id} (auto): ${entry.songs} songs, ${entry.sets} sets`))
+      .catch((err) => console.error('Backup failed:', err));
+  void check();
+  setInterval(check, 60 * 60 * 1000).unref?.();
+}
+
 const server = tls ? createSecureServer(tls, handle) : createServer(handle);
 
 await store.ensureLayout();
 watchFiles();
+scheduleBackups();
 
 server.listen(args.port, args.host, () => {
   console.log(`chordwright serve`);
@@ -261,4 +403,7 @@ server.listen(args.port, args.host, () => {
   // Without /api: this is what goes into the app, which adds the paths itself.
   console.log(`  url    ${tls ? 'https' : 'http'}://${args.host}:${args.port}`);
   console.log(`  auth   ${args.token ? 'token required' : 'none (loopback only)'}`);
+  console.log(
+    `  backup ${args['backup-every'] ? `every ${args['backup-every']} h when changed, newest ${args['backup-keep']} kept` : 'on request only'}`,
+  );
 });

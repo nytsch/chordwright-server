@@ -57,6 +57,8 @@ data/
     setlists.json
     tags.json
     …                             one file per preference record
+  backups/
+    20260928-101530/              a snapshot: backup.json, library/, user/
 ```
 
 A key-value dump would have written the ChordPro text JSON-escaped inside a
@@ -88,6 +90,8 @@ wrote it.
 | `--insecure` | off | allow a non-loopback host with no token |
 | `--cert`, `--key` | none | PEM files; serve https instead of http (both or neither) |
 | `--ca-file` | none | PEM of the CA that signed `--cert`, served at `GET /ca.crt` (public) |
+| `--backup-every` | `24` | hours between automatic snapshots, taken only when something changed; `0` = on request only |
+| `--backup-keep` | `14` | how many automatic snapshots are kept |
 
 Binding to anything but loopback without a token is **refused**, not warned
 about: an open port in a venue's wifi puts every song within reach of anyone on
@@ -109,14 +113,20 @@ also works for an app on an iPhone home screen.
 ## API
 
 ```
-GET    /api/health                → { ok, databases, dir, watching, revisions }   (public)
+GET    /api/health                → { ok, databases, dir, watching, revisions, backups, changes }   (public)
 GET    /api/:db                   → { key: value }
-GET    /api/:db?revs=1            → { records: { key: value }, revs: { key: rev } }
-GET    /api/:db/record/:key       → { value, rev } | 404 { rev: null }
+GET    /api/:db?revs=1            → { records: { key: value }, revs: { key: rev }, changes: { key: change } }
+GET    /api/:db/record/:key       → { value, rev, change } | 404 { rev: null, change }
 PUT    /api/:db/record/:key       ← the raw value string            → 204, ETag
 DELETE /api/:db/record/:key                                          → 204
 GET    /api/events                → SSE: {"db","key","client"} per change
 GET    /ca.crt                    → the CA certificate, DER   (public; only with --ca-file)
+GET    /api/backups               → { backups: [{ id, createdAt, reason, songs, sets, bytes }], everyHours, keep }
+POST   /api/backups               → a snapshot now                   → 201 { id, … }
+POST   /api/backups/:id/restore   → { restored, safety }
+DELETE /api/backups/:id                                              → 204 | 404
+GET    /api/changes?limit=50      → { changes: [{ db, key, at, by, action }] }   newest first
+GET    /api/changes?db=&key=      → { change: { at, by, action } | null }
 ```
 
 `:db` is `library` or `user`. Keys are file names: letters, digits, `.`, `_`,
@@ -150,6 +160,30 @@ the user (keep mine, take theirs, keep both); every other record is JSON and is
 merged three ways on the revision the write was based on — per key, per `id` in
 lists, `tags` as sets — and the user is asked only where both sides changed the
 same field differently.
+
+## Who changed what
+
+Writes may carry `X-Chordwright-User: <name>` (URI-encoded — names are not
+Latin-1). The server keeps the last change to every record — `at`, `by`,
+`action` (`write`, `remove`, `file` for a file saved by hand, `restore`) — and
+a list of the recent ones, in `.chordwright/changes.json`. Several saves of the
+same record by the same person within five minutes are one entry in that list.
+It is a label, not an account: whoever holds the token can write under any name.
+
+## Backups
+
+`backups/` holds snapshots of `library/` and `user/` as plain folders, so one
+song comes back by copying one file. `reason` says where one came from:
+
+- `auto` — every `--backup-every` hours, and only if the library differs from
+  the newest snapshot. The newest `--backup-keep` of them are kept.
+- `manual` — `POST /api/backups`, the button in the app. Kept until deleted.
+- `restore` — taken right before a restore, so the restore can be undone. Kept
+  until deleted.
+
+A restore writes the snapshot's files into the live folders one by one and
+removes what the snapshot does not have; the watcher sees each change, and every
+app is also told that both databases were replaced (`{"db","key":null}`).
 
 ## How it writes and watches
 
