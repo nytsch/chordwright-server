@@ -1,0 +1,64 @@
+# Ein Tag v<version> wird zum GitHub-Release.
+#
+# Das Add-on selbst braucht kein Release: Home Assistant baut das Image aus
+# dem Dockerfile und bietet ein Update an, sobald `version:` in config.yaml
+# auf main steigt. Das Release ist die lesbare Seite dazu — Version, Datum und
+# der passende Abschnitt aus chordwright-data/CHANGELOG.md.
+#
+# Erst testen, dann veröffentlichen: ein Tag auf rotem Code wird kein Release.
+# Ein zweiter Lauf auf denselben Tag (Re-run) aktualisiert nur den Text.
+
+name: release
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: npm test
+
+      - name: Tag, config.yaml und package.json nennen dieselbe Version
+        id: version
+        run: |
+          tag="${GITHUB_REF_NAME#v}"
+          addon=$(sed -n 's/^version: *"\{0,1\}\([^"]*\)"\{0,1\}$/\1/p' chordwright-data/config.yaml)
+          pkg=$(node -p "require('./package.json').version")
+          echo "Tag $tag · config.yaml $addon · package.json $pkg"
+          if [ "$tag" != "$addon" ] || [ "$tag" != "$pkg" ]; then
+            echo "::error::Tag $GITHUB_REF_NAME passt nicht zu config.yaml ($addon) / package.json ($pkg)."
+            exit 1
+          fi
+          echo "version=$tag" >> "$GITHUB_OUTPUT"
+
+      - name: Abschnitt aus dem Changelog
+        run: |
+          awk -v v="${{ steps.version.outputs.version }}" '
+            $0 == "## " v { on = 1; next }
+            /^## / && on { exit }
+            on { print }
+          ' chordwright-data/CHANGELOG.md | sed '/./,$!d' > notes.md
+          if [ ! -s notes.md ]; then
+            echo "::error::Kein Abschnitt „## ${{ steps.version.outputs.version }}“ in chordwright-data/CHANGELOG.md."
+            exit 1
+          fi
+          cat notes.md
+
+      - name: Release anlegen oder aktualisieren
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if gh release view "$GITHUB_REF_NAME" > /dev/null 2>&1; then
+            gh release edit "$GITHUB_REF_NAME" --title "$GITHUB_REF_NAME" --notes-file notes.md
+          else
+            gh release create "$GITHUB_REF_NAME" --title "$GITHUB_REF_NAME" --notes-file notes.md --verify-tag
+          fi
