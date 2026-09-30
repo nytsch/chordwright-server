@@ -113,10 +113,10 @@ also works for an app on an iPhone home screen.
 ## API
 
 ```
-GET    /api/health                → { ok, databases, dir, watching, revisions, backups }   (public)
+GET    /api/health                → { ok, databases, dir, watching, revisions, backups, changes }   (public)
 GET    /api/:db                   → { key: value }
-GET    /api/:db?revs=1            → { records: { key: value }, revs: { key: rev } }
-GET    /api/:db/record/:key       → { value, rev } | 404 { rev: null }
+GET    /api/:db?revs=1            → { records: { key: value }, revs: { key: rev }, changes: { key: change } }
+GET    /api/:db/record/:key       → { value, rev, change } | 404 { rev: null, change }
 PUT    /api/:db/record/:key       ← the raw value string            → 204, ETag
 DELETE /api/:db/record/:key                                          → 204
 GET    /api/events                → SSE: {"db","key","client"} per change
@@ -125,6 +125,8 @@ GET    /api/backups               → { backups: [{ id, createdAt, reason, songs
 POST   /api/backups               → a snapshot now                   → 201 { id, … }
 POST   /api/backups/:id/restore   → { restored, safety }
 DELETE /api/backups/:id                                              → 204 | 404
+GET    /api/changes?limit=50      → { changes: [{ db, key, at, by, action }] }   newest first
+GET    /api/changes?db=&key=      → { change: { at, by, action } | null }
 ```
 
 `:db` is `library` or `user`. Keys are file names: letters, digits, `.`, `_`,
@@ -158,6 +160,15 @@ the user (keep mine, take theirs, keep both); every other record is JSON and is
 merged three ways on the revision the write was based on — per key, per `id` in
 lists, `tags` as sets — and the user is asked only where both sides changed the
 same field differently.
+
+## Who changed what
+
+Writes may carry `X-Chordwright-User: <name>` (URI-encoded — names are not
+Latin-1). The server keeps the last change to every record — `at`, `by`,
+`action` (`write`, `remove`, `file` for a file saved by hand, `restore`) — and
+a list of the recent ones, in `.chordwright/changes.json`. Several saves of the
+same record by the same person within five minutes are one entry in that list.
+It is a label, not an account: whoever holds the token can write under any name.
 
 ## Backups
 

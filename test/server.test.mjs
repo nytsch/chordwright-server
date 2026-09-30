@@ -19,6 +19,7 @@ import { fileURLToPath } from 'node:url';
 import { X509Certificate } from 'node:crypto';
 import { createStore } from '../chordwright-data/server/store.mjs';
 import { createBackups } from '../chordwright-data/server/backups.mjs';
+import { createJournal, cleanName } from '../chordwright-data/server/changes.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const ADDON = join(here, '..', 'chordwright-data');
@@ -416,6 +417,82 @@ test('serve: backups over HTTP — list, create, restore, delete, token enforced
     assert.equal((await fetch(`${base}/backups/nope/restore`, { method: 'POST', headers: auth })).status, 404);
     const preflight = await get(`${base}/backups`, {}, 'OPTIONS');
     assert.match(preflight.headers['access-control-allow-methods'], /POST/);
+  } finally {
+    await server.stop();
+  }
+});
+
+test('changes: last change per record, a merged recent list, written to disk', async () => {
+  const dir = await tempDir();
+  let clock = Date.parse('2026-09-30T10:00:00Z');
+  const journal = createJournal(dir, { keep: 3, now: () => new Date(clock) });
+  await journal.record({ db: 'library', key: 'doc.a', by: 'Anna' });
+  clock += 60_000;
+  await journal.record({ db: 'library', key: 'doc.a', by: 'Anna' }); // typing on: merged
+  clock += 60_000;
+  await journal.record({ db: 'user', key: 'setlists', by: ' Jürgen\n', action: 'write' });
+  await journal.record({ db: 'library', key: 'doc.b', action: 'file' });
+  await journal.record({ db: 'library', key: 'doc.a', by: 'Anna', action: 'remove' });
+
+  assert.deepEqual(await journal.of('library', 'doc.a'), { at: '2026-09-30T10:02:00.000Z', by: 'Anna', action: 'remove' });
+  assert.equal((await journal.of('user', 'setlists')).by, 'Jürgen');
+  assert.equal(await journal.of('library', 'nope'), null);
+  const recent = await journal.recent();
+  assert.deepEqual(recent.map((c) => `${c.key}:${c.action}`), ['doc.a:remove', 'doc.b:file', 'setlists:write']);
+  assert.deepEqual(Object.keys(await journal.forDb('library')).sort(), ['doc.a', 'doc.b']);
+
+  await journal.flush();
+  const again = createJournal(dir);
+  assert.equal((await again.of('library', 'doc.b')).action, 'file');
+  assert.equal(cleanName('   '), null);
+  assert.equal(cleanName('x'.repeat(100)).length, 60);
+});
+
+test('serve: who changed what — header, reads, /api/changes, edits by hand, restore', async () => {
+  const dir = await tempDir();
+  const port = nextPort++;
+  const server = await launch([join(SERVER, 'serve.mjs'), '--dir', dir, '--port', String(port), '--backup-every', '0'], { port });
+  const base = `http://127.0.0.1:${port}/api`;
+  const as = (name) => ({ 'x-chordwright-user': encodeURIComponent(name) });
+  try {
+    assert.equal((await (await fetch(`${base}/health`)).json()).changes, true);
+    await fetch(`${base}/library/record/doc.a`, { method: 'PUT', headers: as('Jürgen'), body: doc('a', 'eins') });
+    const read = await (await fetch(`${base}/library/record/doc.a`)).json();
+    assert.equal(read.change.by, 'Jürgen');
+    assert.equal(read.change.action, 'write');
+    const all = await (await fetch(`${base}/library?revs=1`)).json();
+    assert.equal(all.changes['doc.a'].by, 'Jürgen');
+    assert.ok(typeof (await (await fetch(`${base}/library`)).json())['doc.a'] === 'string', 'plain form unchanged');
+
+    const snap = await (await fetch(`${base}/backups`, { method: 'POST' })).json();
+    await fetch(`${base}/library/record/doc.a`, { method: 'DELETE', headers: as('Anna') });
+    const gone = await (await fetch(`${base}/library/record/doc.a`)).json();
+    assert.equal(gone.change.by, 'Anna');
+    assert.equal(gone.change.action, 'remove');
+
+    // Saved by hand: the watcher books it as a file edit, nobody named.
+    await new Promise((r) => setTimeout(r, 1_200)); // past the self-write window
+    await writeFile(join(dir, 'library', 'songs', 'b.chordpro'), '{title: b}');
+    let byHand = null;
+    for (let i = 0; i < 40 && !byHand; i++) {
+      await new Promise((r) => setTimeout(r, 50));
+      byHand = (await (await fetch(`${base}/changes?db=library&key=doc.b`)).json()).change;
+    }
+    assert.equal(byHand?.action, 'file');
+    assert.equal(byHand.by, null);
+
+    await fetch(`${base}/backups/${snap.id}/restore`, { method: 'POST', headers: as('Anna') });
+    await new Promise((r) => setTimeout(r, 300));
+    const restored = (await (await fetch(`${base}/changes?db=library&key=doc.a`)).json()).change;
+    assert.equal(restored.action, 'restore');
+    assert.equal(restored.by, 'Anna');
+    const recent = (await (await fetch(`${base}/changes?limit=10`)).json()).changes;
+    assert.equal(recent[0].action, 'restore');
+    assert.equal(recent[0].key, snap.id);
+    assert.ok(!recent.some((c) => c.key === 'doc.a' && c.action === 'file'), 'the restore is not booked as edits by hand');
+    assert.equal((await fetch(`${base}/changes?db=nope&key=x`)).status, 400);
+    const preflight = await get(`${base}/library`, {}, 'OPTIONS');
+    assert.match(preflight.headers['access-control-allow-headers'], /x-chordwright-user/);
   } finally {
     await server.stop();
   }

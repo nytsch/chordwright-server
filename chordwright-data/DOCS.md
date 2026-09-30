@@ -78,6 +78,10 @@ backups/                   Sicherungen, je ein Ordner mit Datum
 
 Speicherst du einen Song, sieht eine offene App die Änderung sofort. Legst du eine neue `.chordpro`-Datei ab, erscheint sie beim nächsten Start der App als Song.
 
+## Wer hat was geändert
+
+In der App trägst du beim Server deinen Namen ein. Der Server merkt sich dann zu jedem Song, jeder Setlist und jeder Einstellung, wer sie zuletzt wann geändert hat, und die App zeigt das unter *Datenquelle → Letzte Änderungen* und bei einem Konflikt zwischen zwei Geräten. Eine per Samba gespeicherte Datei steht dort als „von Hand“. Das Protokoll liegt in `share/chordwright/.chordwright/changes.json`.
+
 ## Sicherungen
 
 Das Add-on sichert Bibliothek, Abläufe und Einstellungen selbst, nach `share/chordwright/backups/`:

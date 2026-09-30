@@ -26,7 +26,9 @@
  * now, so the client can put both versions in front of the user. Without
  * either header a write is unconditional, as it always was.
  *   GET    /api/events             → SSE: {"db","key","client"} on every change
- *   GET    /api/health             → { ok, databases, dir, revisions, backups }
+ *   GET    /api/health             → { ok, databases, dir, revisions, backups, changes }
+ *   GET    /api/changes?limit=50   → { changes: [{ db, key, at, by, action }] }, newest first
+ *   GET    /api/changes?db=&key=   → { change: { at, by, action } | null }
  *   GET    /api/backups            → { backups: [...], everyHours, keep }
  *   POST   /api/backups            → a snapshot now → 201 { id, createdAt, … }
  *   POST   /api/backups/:id/restore → { restored, safety }
@@ -34,6 +36,9 @@
  *
  * `--cert <pem> --key <pem>` serves https instead of http; `--ca-file <pem>`
  * hands out the authority that signed it at GET /ca.crt.
+ *
+ * Writes may carry `X-Chordwright-User: <name, URI-encoded>`; reads of a
+ * record and `?revs=1` then say who changed it last and when (changes.mjs).
  *
  * `--backup-every <hours>` (default 24, 0 = never) takes a snapshot on that
  * schedule when something changed; `--backup-keep <n>` (default 14) is how many
@@ -46,6 +51,7 @@ import { readFileSync, watch } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { createStore, DATABASES, isValidKey } from './store.mjs';
 import { createBackups } from './backups.mjs';
+import { createJournal } from './changes.mjs';
 
 function parseArgs(argv) {
   const args = {
@@ -76,6 +82,25 @@ const args = parseArgs(process.argv.slice(2));
 const root = resolve(args.dir);
 const store = createStore(root);
 const backups = createBackups(root, { keep: args['backup-keep'] });
+const journal = createJournal(root);
+
+/**
+ * The name the app sends with its writes. Encoded by the client, because a
+ * header only carries Latin-1 and people are called Jürgen.
+ */
+function userOf(req) {
+  const raw = req.headers['x-chordwright-user'];
+  if (typeof raw !== 'string' || !raw) return null;
+  try {
+    return decodeURIComponent(raw);
+  } catch {
+    return raw;
+  }
+}
+
+// A restore writes the files itself; the watcher would book each one as an
+// edit by hand. Until then, it is the restore's.
+let restoringUntil = 0;
 
 // Binding to anything but loopback puts every song in the venue's wifi within
 // reach of anyone on it. Refuse rather than warn: a warning scrolls past.
@@ -137,7 +162,12 @@ function watchFiles() {
         if (!found) return;
         // A write we just made comes back through the watcher too. The client id
         // rides along so the tab that wrote is not told about its own change.
-        const client = recentSelfWrites.get(`${found.db}/${found.key}`) ?? null;
+        const stamp = `${found.db}/${found.key}`;
+        const client = recentSelfWrites.get(stamp) ?? null;
+        // Not ours and not a restore: someone saved the file by hand.
+        if (!recentSelfWrites.has(stamp) && Date.now() > restoringUntil) {
+          void journal.record({ db: found.db, key: found.key, action: 'file' });
+        }
         broadcast(found.db, found.key, client);
       });
     } catch (err) {
@@ -153,7 +183,7 @@ function send(res, status, body, headers = {}) {
   res.writeHead(status, {
     'content-type': 'application/json; charset=utf-8',
     'access-control-allow-origin': '*',
-    'access-control-allow-headers': 'authorization, content-type, x-chordwright-client, if-match, if-none-match',
+    'access-control-allow-headers': 'authorization, content-type, x-chordwright-client, x-chordwright-user, if-match, if-none-match',
     'access-control-expose-headers': 'etag',
     'access-control-allow-methods': 'GET, PUT, POST, DELETE, OPTIONS',
     'cache-control': 'no-store',
@@ -208,6 +238,7 @@ async function handle(req, res) {
       watching: listeners.size,
       revisions: true,
       backups: true,
+      changes: true,
     });
   }
   if (!authorised(req)) return send(res, 401, { error: 'unauthorised' });
@@ -231,13 +262,26 @@ async function handle(req, res) {
   }
 
   if (parts[1] === 'backups') return handleBackups(req, res, parts.slice(2));
+  if (parts[1] === 'changes' && parts.length === 2 && req.method === 'GET') {
+    const db = url.searchParams.get('db');
+    const key = url.searchParams.get('key');
+    if (db !== null || key !== null) {
+      if (!DATABASES.includes(db) || !isValidKey(key)) return send(res, 400, { error: 'bad db or key' });
+      return send(res, 200, { change: await journal.of(db, key) });
+    }
+    const limit = Math.min(500, Math.max(1, Number(url.searchParams.get('limit')) || 50));
+    return send(res, 200, { changes: await journal.recent(limit) });
+  }
 
   const db = parts[1];
   if (!DATABASES.includes(db)) return send(res, 404, { error: 'unknown database' });
 
   try {
     if (parts.length === 2 && req.method === 'GET') {
-      if (url.searchParams.get('revs') === '1') return send(res, 200, await store.readAllVersioned(db));
+      if (url.searchParams.get('revs') === '1') {
+        const [versioned, changes] = await Promise.all([store.readAllVersioned(db), journal.forDb(db)]);
+        return send(res, 200, { ...versioned, changes });
+      }
       return send(res, 200, await store.readAll(db));
     }
 
@@ -248,12 +292,14 @@ async function handle(req, res) {
     const client = req.headers['x-chordwright-client'] ?? null;
 
     if (req.method === 'GET') {
-      const { value, rev } = await store.readVersioned(db, key);
+      const [{ value, rev }, change] = await Promise.all([store.readVersioned(db, key), journal.of(db, key)]);
       // `rev: null` on a miss too: it tells a client this server keeps
-      // revisions even before it has read a single record that exists.
+      // revisions even before it has read a single record that exists. The
+      // last change goes along either way: a removed record was removed by
+      // someone.
       return value === null
-        ? send(res, 404, { error: 'no such record', rev: null })
-        : send(res, 200, { value, rev }, { etag: `"${rev}"` });
+        ? send(res, 404, { error: 'no such record', rev: null, change })
+        : send(res, 200, { value, rev, change }, { etag: `"${rev}"` });
     }
 
     if (req.method === 'PUT' || req.method === 'DELETE') {
@@ -272,6 +318,7 @@ async function handle(req, res) {
         recentSelfWrites.delete(stamp);
         return send(res, 412, { value: result.value, rev: result.rev });
       }
+      void journal.record({ db, key, by: userOf(req), action: req.method === 'PUT' ? 'write' : 'remove' });
       broadcast(db, key, client);
       return send(res, 204, undefined, result.rev ? { etag: `"${result.rev}"` } : {});
     }
@@ -295,8 +342,21 @@ async function handleBackups(req, res, rest) {
       return send(res, 201, entry);
     }
     if (rest.length === 2 && rest[1] === 'restore' && req.method === 'POST') {
-      const result = await backups.restore(decodeURIComponent(rest[0]));
+      restoringUntil = Infinity;
+      let result;
+      try {
+        result = await backups.restore(decodeURIComponent(rest[0]));
+      } finally {
+        // The watcher reports a little after the write; give it that long.
+        restoringUntil = Date.now() + 2_000;
+      }
       if (!result) return send(res, 404, { error: 'no such backup' });
+      const by = userOf(req);
+      for (const path of result.changed) {
+        const found = store.keyForPath(path);
+        if (found) void journal.record({ ...found, by, action: 'restore', listed: false });
+      }
+      void journal.record({ db: '*', key: result.restored.id, by, action: 'restore' });
       console.log(`Restored backup ${result.restored.id}; what was there before is backup ${result.safety.id}`);
       // The watcher reports every file on its own; this tells each app that
       // the whole database moved, so it reads it again in one go.

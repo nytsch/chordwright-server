@@ -198,7 +198,8 @@ export function createBackups(root, { keep = 14, now = () => new Date() } = {}) 
 
     /**
      * Put a snapshot back. What is there now is kept first as a `restore`
-     * snapshot. Resolves to both, or null when there is no such snapshot.
+     * snapshot. Resolves to both, and the paths that changed, or null when
+     * there is no such snapshot.
      */
     restore(id) {
       return serial(async () => {
@@ -207,6 +208,7 @@ export function createBackups(root, { keep = 14, now = () => new Date() } = {}) 
         if (!target) return null;
         const safety = await take('restore', await survey(root));
         const wanted = new Set();
+        const changed = [];
         for (const tree of TREES) {
           for (const rel of await walk(join(base, id, tree))) {
             const path = join(tree, rel);
@@ -217,15 +219,18 @@ export function createBackups(root, { keep = 14, now = () => new Date() } = {}) 
             if (same) continue;
             await mkdir(dirname(live), { recursive: true });
             await writeAtomic(live, body);
+            changed.push(path);
           }
         }
         for (const tree of TREES) {
           for (const rel of await walk(join(root, tree))) {
             const path = join(tree, rel);
-            if (!wanted.has(path)) await rm(join(root, path), { force: true });
+            if (wanted.has(path)) continue;
+            await rm(join(root, path), { force: true });
+            changed.push(path);
           }
         }
-        return { restored: target, safety };
+        return { restored: target, safety, changed };
       });
     },
 
