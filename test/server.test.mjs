@@ -669,6 +669,18 @@ test('serve: --cert without --key is refused', async () => {
 // Home-Assistant-Add-on (chordwright-data)
 // ---------------------------------------------------------------------------
 
+test('addon: every certificate parses — the random serial is always valid DER', async () => {
+  // Eine zufällige Seriennummer mit führendem 0x00 war nicht minimal kodiert;
+  // OpenSSL 3 lehnte etwa jedes zweihundertste Zertifikat ab. Tausend Stück
+  // hätten das fast sicher getroffen.
+  const { createCA, issueServerCert } = await import(join(ADDON, 'certs.mjs'));
+  const ca = createCA();
+  for (let i = 0; i < 1000; i++) {
+    new X509Certificate(createCA().cert);
+    new X509Certificate(issueServerCert(ca, { dnsNames: ['a.local'], ips: ['127.0.0.1'] }).cert);
+  }
+});
+
 test('addon: the CA and the server certificate it issues are what browsers and openssl accept', async () => {
   const { createCA, issueServerCert, SERVER_VALIDITY_DAYS } = await import(join(ADDON, 'certs.mjs'));
   const dir = await tempDir();
