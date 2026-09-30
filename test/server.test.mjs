@@ -513,6 +513,13 @@ test('serve: If-Match / If-None-Match over HTTP, 412 with the current state', as
     const miss = await fetch(`http://127.0.0.1:${port}/api/user/record/nothing`);
     assert.equal(miss.status, 404);
     assert.ok('rev' in (await miss.json()));
+    // …and asked quietly, the same answer without a 404 in the browser's console.
+    const quiet = await fetch(`http://127.0.0.1:${port}/api/user/record/nothing?quiet=1`);
+    assert.equal(quiet.status, 200);
+    assert.deepEqual(await quiet.json(), { value: null, rev: null, change: null, missing: true });
+    const found = await fetch(`http://127.0.0.1:${port}/api/library/record/doc.x?quiet=1`);
+    assert.equal(found.status, 200);
+    assert.equal(JSON.parse((await found.json()).value).data.text, 'eins');
 
     const read = await (await fetch(url)).json();
     assert.equal(`"${read.rev}"`, rev);

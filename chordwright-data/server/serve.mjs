@@ -17,6 +17,7 @@
  *   GET    /api/:db                → { key: value } for the whole database
  *   GET    /api/:db?revs=1         → { records: { key: value }, revs: { key: rev } }
  *   GET    /api/:db/record/:key    → { value, rev } | 404
+ *   GET    /api/:db/record/:key?quiet=1 → a miss as 200 { value: null, rev: null, missing: true }
  *   PUT    /api/:db/record/:key    → body is the raw value string
  *   DELETE /api/:db/record/:key
  *
@@ -297,9 +298,13 @@ async function handle(req, res) {
       // revisions even before it has read a single record that exists. The
       // last change goes along either way: a removed record was removed by
       // someone.
-      return value === null
-        ? send(res, 404, { error: 'no such record', rev: null, change })
-        : send(res, 200, { value, rev, change }, { etag: `"${rev}"` });
+      if (value !== null) return send(res, 200, { value, rev, change }, { etag: `"${rev}"` });
+      // A miss is an answer, not an error — but a browser logs every 404 in
+      // red, and an app asks for a dozen records nobody has set yet on each
+      // start. With `?quiet=1` the miss comes back as 200 and `missing: true`;
+      // without it, as the 404 an older app expects.
+      if (url.searchParams.has('quiet')) return send(res, 200, { value: null, rev: null, change, missing: true });
+      return send(res, 404, { error: 'no such record', rev: null, change });
     }
 
     if (req.method === 'PUT' || req.method === 'DELETE') {

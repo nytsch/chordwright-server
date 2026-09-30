@@ -117,6 +117,7 @@ GET    /api/health                → { ok, databases, dir, watching, revisions,
 GET    /api/:db                   → { key: value }
 GET    /api/:db?revs=1            → { records: { key: value }, revs: { key: rev }, changes: { key: change } }
 GET    /api/:db/record/:key       → { value, rev, change } | 404 { rev: null, change }
+GET    /api/:db/record/:key?quiet=1  → a miss as 200 { value: null, rev: null, change, missing: true }
 PUT    /api/:db/record/:key       ← the raw value string            → 204, ETag
 DELETE /api/:db/record/:key                                          → 204
 GET    /api/events                → SSE: {"db","key","client"} per change
