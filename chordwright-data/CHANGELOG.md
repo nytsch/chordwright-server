@@ -1,11 +1,15 @@
 # Changelog
 
-## 1.4.0
+## 1.5.0
 
 - Den Server gibt es jetzt auch als einzelne Programmdatei für macOS (Intel, Apple Silicon und beides in einem), Windows und Linux, ohne installiertes Node. Sie hängt an jedem Release und ist für die Desktop-App gedacht, die damit eine Bibliothek als Ordner auf demselben Rechner führen kann.
 - Für Programme, die den Server selbst starten: `--port 0` nimmt einen freien Port, `--ready-json` meldet ihn als eine JSON-Zeile, und mit `--exit-with-stdin` endet der Server, sobald das startende Programm weg ist.
 - Unter Windows scheiterte ein Speichern gelegentlich, wenn die Datei im selben Moment gelesen wurde (`EPERM`). Der Server versucht es jetzt kurz erneut.
 - Am Add-on ändert sich nichts.
+
+## 1.4.0
+
+- Gemeinsame Bühne: Ein Gerät leitet, die anderen folgen — Set, Lied, Liedwechsel und Start, im Takt. Mehrere Bühnen gleichzeitig, jede mit eigenem Namen. Neue Schnittstellen `/api/stage` und `/api/time`; die Bühnenstände gehen als benanntes Ereignis `stage` über `/api/events`.
 
 ## 1.3.1
 

@@ -20,6 +20,7 @@ import { X509Certificate } from 'node:crypto';
 import { createStore } from '../chordwright-data/server/store.mjs';
 import { createBackups } from '../chordwright-data/server/backups.mjs';
 import { createJournal, cleanName } from '../chordwright-data/server/changes.mjs';
+import { createStage, cleanRoom, MAX_STATE_BYTES } from '../chordwright-data/server/stage.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const ADDON = join(here, '..', 'chordwright-data');
@@ -674,6 +675,132 @@ test('serve: as the desktop app starts it — free port, one JSON line, gone wit
   const code = await Promise.race([exited, new Promise((r) => setTimeout(() => r('still running'), 5_000))]);
   if (code === 'still running') child.kill();
   assert.equal(code, 0);
+});
+
+test('stage: lead, publish, lease, takeover, several rooms side by side', () => {
+  let t = 1_000;
+  const changes = [];
+  const stage = createStage({ now: () => t, leaseMs: 10_000, onChange: (snap) => changes.push(snap) });
+
+  assert.equal(cleanRoom('  Band  '), 'Band');
+  assert.equal(cleanRoom(''), null);
+  assert.equal(cleanRoom('a/b'), null);
+  assert.equal(cleanRoom('x'.repeat(41)), null);
+
+  // Nobody leads: a write is refused, reading is fine.
+  assert.equal(stage.publish('band', { client: 'a', state: {} }).status, 409);
+  assert.deepEqual(stage.read('band'), { room: 'band', leader: null, state: null, rev: 0, now: 1_000 });
+
+  const led = stage.lead('band', { client: 'a', name: '  Niko ' });
+  assert.equal(led.ok, true);
+  assert.deepEqual(led.leader, { client: 'a', name: 'Niko', until: 11_000 });
+  assert.equal(stage.lead('band', { client: '' }).status, 400);
+
+  // Someone else: refused while the lease runs, and only the leader may write.
+  const taken = stage.lead('band', { client: 'b', name: 'Bass' });
+  assert.equal(taken.status, 409);
+  assert.equal(taken.leader.name, 'Niko');
+  assert.equal(stage.publish('band', { client: 'b', state: { songId: 'x' } }).status, 403);
+
+  const before = changes.length;
+  const put = stage.publish('band', { client: 'a', state: { songId: 'x', playing: false } });
+  assert.equal(put.ok, true);
+  assert.deepEqual(put.state, { songId: 'x', playing: false });
+  assert.equal(changes.length, before + 1);
+  assert.equal(stage.publish('band', { client: 'a', state: [] }).status, 400);
+  assert.equal(stage.publish('band', { client: 'a', state: { pad: 'x'.repeat(MAX_STATE_BYTES) } }).status, 413);
+
+  // A second room is its own stage.
+  assert.equal(stage.lead('probe', { client: 'b', name: 'Bass' }).ok, true);
+  assert.deepEqual(stage.list().map((r) => [r.room, r.leader?.name]), [['band', 'Niko'], ['probe', 'Bass']]);
+
+  // Writing renews the lease; going quiet loses it, and the sweep tells everyone.
+  t = 9_000;
+  stage.publish('band', { client: 'a', state: { songId: 'y' } });
+  t = 15_000;
+  assert.equal(stage.read('band').leader.name, 'Niko');
+  t = 19_001;
+  stage.sweep();
+  assert.equal(stage.read('band').leader, null);
+  assert.ok(changes.some((c) => c.room === 'band' && c.leader === null));
+  // The state stays: a follower that joins late still knows where things stood.
+  assert.deepEqual(stage.read('band').state, { songId: 'y' });
+
+  // Force takes a held room; release by a non-leader is a no-op.
+  stage.lead('band', { client: 'a' });
+  assert.equal(stage.lead('band', { client: 'b', force: true }).leader.client, 'b');
+  stage.release('band', { client: 'a' });
+  assert.equal(stage.read('band').leader.client, 'b');
+  stage.release('band', { client: 'b' });
+  assert.equal(stage.read('band').leader, null);
+});
+
+test('serve: shared stage over HTTP — token, lead, publish, SSE as a named event', async () => {
+  const dir = await tempDir();
+  const port = nextPort++;
+  const server = await launch([join(SERVER, 'serve.mjs'), '--dir', dir, '--port', String(port), '--token', 't'], { port });
+  const base = `http://127.0.0.1:${port}/api`;
+  const as = (client) => ({ authorization: 'Bearer t', 'content-type': 'application/json', 'x-chordwright-client': client });
+  const controller = new AbortController();
+  try {
+    assert.equal((await (await fetch(`${base}/health`)).json()).stage, true);
+    assert.equal((await fetch(`${base}/stage/band`)).status, 401);
+    const time = await (await fetch(`${base}/time`, { headers: as('a') })).json();
+    assert.ok(Math.abs(time.now - Date.now()) < 5_000);
+
+    const named = [];
+    const plain = [];
+    const res = await fetch(`${base}/events?token=t`, { signal: controller.signal });
+    (async () => {
+      const decoder = new TextDecoder();
+      let buffer = '';
+      try {
+        for await (const chunk of res.body) {
+          buffer += decoder.decode(chunk);
+          let end;
+          while ((end = buffer.indexOf('\n\n')) >= 0) {
+            const block = buffer.slice(0, end);
+            buffer = buffer.slice(end + 2);
+            const event = /^event: (.*)$/m.exec(block)?.[1];
+            const data = /^data: (.*)$/m.exec(block)?.[1];
+            if (data) (event === 'stage' ? named : plain).push(JSON.parse(data));
+          }
+        }
+      } catch {
+        /* aborted */
+      }
+    })();
+
+    const lead = await fetch(`${base}/stage/Die%20Band/lead`, { method: 'POST', headers: as('a'), body: JSON.stringify({ name: 'Niko' }) });
+    assert.equal(lead.status, 200);
+    assert.equal((await lead.json()).leader.name, 'Niko');
+    const other = await fetch(`${base}/stage/Die%20Band/lead`, { method: 'POST', headers: as('b'), body: '{}' });
+    assert.equal(other.status, 409);
+
+    const state = { setId: 's1', index: 2, songId: 'lied', playing: true, startAt: Date.now() };
+    const put = await fetch(`${base}/stage/Die%20Band`, { method: 'PUT', headers: as('a'), body: JSON.stringify({ state }) });
+    assert.equal(put.status, 200);
+    assert.equal((await fetch(`${base}/stage/Die%20Band`, { method: 'PUT', headers: as('b'), body: JSON.stringify({ state }) })).status, 403);
+    assert.equal((await fetch(`${base}/stage/Die%20Band`, { method: 'PUT', headers: as('a'), body: 'nope' })).status, 400);
+
+    const read = await (await fetch(`${base}/stage/Die%20Band`, { headers: as('b') })).json();
+    assert.deepEqual(read.state, state);
+    assert.equal(read.room, 'Die Band');
+    const rooms = await (await fetch(`${base}/stage`, { headers: as('b') })).json();
+    assert.deepEqual(rooms.rooms.map((r) => r.room), ['Die Band']);
+
+    for (let i = 0; i < 100 && !named.some((e) => e.state?.songId === 'lied'); i++) await new Promise((r) => setTimeout(r, 20));
+    assert.ok(named.some((e) => e.room === 'Die Band' && e.state?.songId === 'lied'), JSON.stringify(named));
+    // Nothing of it on the unnamed channel an older app reads.
+    assert.equal(plain.length, 0);
+
+    assert.equal((await fetch(`${base}/stage/Die%20Band/lead`, { method: 'DELETE', headers: as('a') })).status, 200);
+    assert.equal((await (await fetch(`${base}/stage/Die%20Band`, { headers: as('b') })).json()).leader, null);
+    assert.equal((await fetch(`${base}/stage/a%2Fb`, { headers: as('a') })).status, 400);
+  } finally {
+    controller.abort();
+    await server.stop();
+  }
 });
 
 test('serve: preflight answers Private Network Access', async () => {

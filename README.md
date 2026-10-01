@@ -137,7 +137,7 @@ also works for an app on an iPhone home screen.
 ## API
 
 ```
-GET    /api/health                → { ok, databases, dir, watching, revisions, backups, changes }   (public)
+GET    /api/health                → { ok, databases, dir, watching, revisions, backups, changes, stage }   (public)
 GET    /api/:db                   → { key: value }
 GET    /api/:db?revs=1            → { records: { key: value }, revs: { key: rev }, changes: { key: change } }
 GET    /api/:db/record/:key       → { value, rev, change } | 404 { rev: null, change }
@@ -152,6 +152,12 @@ POST   /api/backups/:id/restore   → { restored, safety }
 DELETE /api/backups/:id                                              → 204 | 404
 GET    /api/changes?limit=50      → { changes: [{ db, key, at, by, action }] }   newest first
 GET    /api/changes?db=&key=      → { change: { at, by, action } | null }
+GET    /api/time                  → { now }   the server's clock in ms
+GET    /api/stage                 → { now, rooms: [{ room, leader: { name } | null, rev, touched }] }
+GET    /api/stage/:room           → { room, leader: { client, name, until } | null, state, rev, now }
+POST   /api/stage/:room/lead      ← { name?, force? }  → 200 snapshot | 409 snapshot (someone else leads)
+DELETE /api/stage/:room/lead                                         → 200 snapshot
+PUT    /api/stage/:room           ← { state }          → 200 snapshot | 403 not the leader | 409 nobody leads
 ```
 
 `:db` is `library` or `user`. Keys are file names: letters, digits, `.`, `_`,
@@ -209,6 +215,30 @@ song comes back by copying one file. `reason` says where one came from:
 A restore writes the snapshot's files into the live folders one by one and
 removes what the snapshot does not have; the watcher sees each change, and every
 app is also told that both databases were replaced (`{"db","key":null}`).
+
+## Shared stage
+
+One device leads a performance, the others follow: the leader says which set,
+which song, and whether and since when the clock runs; the followers go along.
+Several rooms (`:room`, any name up to 40 characters without `/`) can be open
+at once — two bands on one server share a library, not a stage.
+
+- **Leading is a lease** of 15 seconds, taken with `POST …/lead` and renewed by
+  every `PUT` (the app sends its state every few seconds while it leads, so
+  followers can correct drift). A leader that goes quiet loses the room; the
+  followers hear of it (`leader: null`). Taking a room someone still holds
+  needs `force: true` — the app asks first.
+- **The state is the app's.** The server checks that it is an object of at most
+  8 KB and stores it as it is, with a revision. Times in it are server times:
+  every answer carries `now`, and `GET /api/time` exists so a client can measure
+  its offset to the server's clock.
+- **Changes go out on `/api/events`** as a *named* event, `event: stage`, with
+  the same snapshot as `GET /api/stage/:room`. An app that only listens with
+  `onmessage` never sees them.
+- **Memory only.** Nothing of it is written to disk: after a restart the
+  leader's next write brings the room back.
+
+The client id is `X-Chordwright-Client`, as for writes.
 
 ## How it writes and watches
 

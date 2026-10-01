@@ -27,9 +27,16 @@
  * now, so the client can put both versions in front of the user. Without
  * either header a write is unconditional, as it always was.
  *   GET    /api/events             → SSE: {"db","key","client"} on every change
- *   GET    /api/health             → { ok, databases, dir, revisions, backups, changes }
+ *   GET    /api/health             → { ok, databases, dir, revisions, backups, changes, stage }
  *   GET    /api/changes?limit=50   → { changes: [{ db, key, at, by, action }] }, newest first
  *   GET    /api/changes?db=&key=   → { change: { at, by, action } | null }
+ *   GET    /api/time               → { now }  — the server's clock, for the stage
+ *   GET    /api/stage              → { now, rooms: [{ room, leader, rev, touched }] }
+ *   GET    /api/stage/:room        → { room, leader, state, rev, now }
+ *   POST   /api/stage/:room/lead   → take or renew the lead; body { name, force }; 409 if led
+ *   DELETE /api/stage/:room/lead   → let go of it
+ *   PUT    /api/stage/:room        → the leader's state; body { state }; 403/409 if not leader
+ * Stage changes also go out on /api/events as `event: stage` (stage.mjs).
  *   GET    /api/backups            → { backups: [...], everyHours, keep }
  *   POST   /api/backups            → a snapshot now → 201 { id, createdAt, … }
  *   POST   /api/backups/:id/restore → { restored, safety }
@@ -53,6 +60,7 @@ import { join, resolve } from 'node:path';
 import { createStore, DATABASES, isValidKey } from './store.mjs';
 import { createBackups } from './backups.mjs';
 import { createJournal } from './changes.mjs';
+import { createStage, cleanRoom } from './stage.mjs';
 
 function parseArgs(argv) {
   const args = {
@@ -151,6 +159,15 @@ function broadcast(db, key, client = null) {
   for (const res of listeners) res.write(line);
 }
 
+// A named event: an app that only listens with `onmessage` never sees it, so
+// older apps on the same server are not confused by a line they cannot read.
+function broadcastStage(snapshot) {
+  const line = `event: stage\ndata: ${JSON.stringify(snapshot)}\n\n`;
+  for (const res of listeners) res.write(line);
+}
+
+const stage = createStage({ onChange: broadcastStage });
+
 function watchFiles() {
   // Not `{ recursive: true }`: on Linux Node implements that by watching each
   // file, and a file replaced by a rename — an atomic save, which this server
@@ -243,6 +260,7 @@ async function handle(req, res) {
       revisions: true,
       backups: true,
       changes: true,
+      stage: true,
     });
   }
   if (!authorised(req)) return send(res, 401, { error: 'unauthorised' });
@@ -265,6 +283,8 @@ async function handle(req, res) {
     return undefined;
   }
 
+  if (parts[1] === 'time' && parts.length === 2 && req.method === 'GET') return send(res, 200, { now: Date.now() });
+  if (parts[1] === 'stage') return handleStage(req, res, parts.slice(2));
   if (parts[1] === 'backups') return handleBackups(req, res, parts.slice(2));
   if (parts[1] === 'changes' && parts.length === 2 && req.method === 'GET') {
     const db = url.searchParams.get('db');
@@ -338,6 +358,48 @@ async function handle(req, res) {
   }
 }
 
+async function handleStage(req, res, rest) {
+  if (rest.length === 0) {
+    return req.method === 'GET'
+      ? send(res, 200, { now: Date.now(), rooms: stage.list() })
+      : send(res, 405, { error: 'method not allowed' });
+  }
+  let room;
+  try {
+    room = cleanRoom(decodeURIComponent(rest[0]));
+  } catch {
+    room = null;
+  }
+  if (!room) return send(res, 400, { error: 'bad room' });
+  const client = req.headers['x-chordwright-client'] ?? null;
+  const answer = ({ ok, status, ...body }) => send(res, ok ? 200 : status, body);
+
+  let body = {};
+  if (req.method === 'PUT' || req.method === 'POST') {
+    const raw = await readBody(req);
+    try {
+      body = raw ? JSON.parse(raw) : {};
+    } catch {
+      return send(res, 400, { error: 'body is not JSON' });
+    }
+    if (body === null || typeof body !== 'object') return send(res, 400, { error: 'body must be an object' });
+  }
+
+  if (rest.length === 1) {
+    if (req.method === 'GET') return send(res, 200, stage.read(room));
+    if (req.method === 'PUT') return answer(stage.publish(room, { client, state: body.state }));
+    return send(res, 405, { error: 'method not allowed' });
+  }
+  if (rest.length === 2 && rest[1] === 'lead') {
+    if (req.method === 'POST') {
+      return answer(stage.lead(room, { client, name: body.name ?? userOf(req), force: body.force === true }));
+    }
+    if (req.method === 'DELETE') return answer(stage.release(room, { client }));
+    return send(res, 405, { error: 'method not allowed' });
+  }
+  return send(res, 404, { error: 'not found' });
+}
+
 async function handleBackups(req, res, rest) {
   try {
     if (rest.length === 0 && req.method === 'GET') {
@@ -406,6 +468,8 @@ const server = tls ? createSecureServer(tls, handle) : createServer(handle);
 store.ensureLayout().then(
   () => {
     watchFiles();
+    // Runs out leases of leaders that went quiet, so their followers hear of it.
+    setInterval(() => stage.sweep(), 2_000).unref?.();
     scheduleBackups();
     server.listen(args.port, args.host, ready);
   },
