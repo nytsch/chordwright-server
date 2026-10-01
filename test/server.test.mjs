@@ -31,9 +31,20 @@ const doc = (id, text = `{title: ${id}}\n[C]la`, origin = 'seed') =>
 
 let nextPort = 20000 + Math.floor(Math.random() * 20000);
 
+/**
+ * Which program runs serve.mjs. Normally this Node; with
+ * CHORDWRIGHT_SERVER_BIN set, the compiled binary instead (npm run build:bin),
+ * so the same tests check what the desktop app ships. start.mjs is the add-on's
+ * and always runs under Node.
+ */
+const BIN = process.env.CHORDWRIGHT_SERVER_BIN;
+function command(args) {
+  return BIN && args[0] === join(SERVER, 'serve.mjs') ? [BIN, args.slice(1)] : [process.execPath, args];
+}
+
 /** Start a process that runs the server, wait for /api/health, hand back a stopper. */
 async function launch(args, { env = {}, scheme = 'http', port } = {}) {
-  const child = spawn(process.execPath, args, {
+  const child = spawn(...command(args), {
     env: { ...process.env, ...env },
     stdio: ['ignore', 'pipe', 'pipe'],
   });
@@ -626,6 +637,40 @@ test('serve: file edits reach SSE listeners, also after an atomic replace', asyn
   }
 });
 
+test('serve: as the desktop app starts it — free port, one JSON line, gone with its parent', async () => {
+  const dir = await tempDir();
+  const child = spawn(
+    ...command([join(SERVER, 'serve.mjs'), '--dir', dir, '--port', '0', '--token', 't', '--ready-json', '--exit-with-stdin']),
+    { stdio: ['pipe', 'pipe', 'pipe'] },
+  );
+  const exited = new Promise((r) => child.on('exit', (code) => r(code)));
+  try {
+    let out = '';
+    const line = await new Promise((resolve, reject) => {
+      const timer = setTimeout(() => reject(new Error(`no ready line:\n${out}`)), 10_000);
+      child.stdout.on('data', (d) => {
+        out += d;
+        if (out.includes('\n')) {
+          clearTimeout(timer);
+          resolve(out.split('\n')[0]);
+        }
+      });
+    });
+    const ready = JSON.parse(line);
+    assert.equal(ready.ready, true);
+    assert.ok(ready.port > 0 && ready.port !== 4174, `a port of the system's choosing: ${ready.port}`);
+    assert.equal(ready.url, `http://127.0.0.1:${ready.port}`);
+    const res = await get(`${ready.url}/api/library`, { authorization: 'Bearer t' });
+    assert.equal(res.status, 200);
+  } finally {
+    // The app closes its end — or crashes, which closes it just the same.
+    child.stdin.end();
+  }
+  const code = await Promise.race([exited, new Promise((r) => setTimeout(() => r('still running'), 5_000))]);
+  if (code === 'still running') child.kill();
+  assert.equal(code, 0);
+});
+
 test('serve: preflight answers Private Network Access', async () => {
   const dir = await tempDir();
   const port = nextPort++;
@@ -662,7 +707,7 @@ test('serve: https with --cert/--key, token enforced', async () => {
 
 test('serve: --cert without --key is refused', async () => {
   const dir = await tempDir();
-  const child = spawn(process.execPath, [join(SERVER, 'serve.mjs'), '--dir', dir, '--port', String(nextPort++), '--cert', 'x.pem'], {
+  const child = spawn(...command([join(SERVER, 'serve.mjs'), '--dir', dir, '--port', String(nextPort++), '--cert', 'x.pem']), {
     stdio: ['ignore', 'pipe', 'pipe'],
   });
   let err = '';
