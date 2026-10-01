@@ -85,7 +85,11 @@ function ipBytes(ip) {
 
 function certificate({ subject, issuer, publicKey, signingKey, notBefore, notAfter, extensions }) {
   const serial = randomBytes(16);
-  serial[0] &= 0x7f;
+  // Positiv (oberstes Bit aus) und ohne führende Null: DER verlangt die
+  // kürzeste Form, und ein erstes Byte 0x00 vor einem Byte unter 0x80 ist
+  // Auffüllung, die OpenSSL 3 als „illegal padding" ablehnt — bei zufälliger
+  // Seriennummer etwa jedes zweihundertste Zertifikat.
+  serial[0] = serial[0] & 0x7f || 0x01;
   const tbs = seq(
     explicit(0, integer(Buffer.from([2]))), // v3
     integer(serial),

@@ -513,6 +513,13 @@ test('serve: If-Match / If-None-Match over HTTP, 412 with the current state', as
     const miss = await fetch(`http://127.0.0.1:${port}/api/user/record/nothing`);
     assert.equal(miss.status, 404);
     assert.ok('rev' in (await miss.json()));
+    // …and asked quietly, the same answer without a 404 in the browser's console.
+    const quiet = await fetch(`http://127.0.0.1:${port}/api/user/record/nothing?quiet=1`);
+    assert.equal(quiet.status, 200);
+    assert.deepEqual(await quiet.json(), { value: null, rev: null, change: null, missing: true });
+    const found = await fetch(`http://127.0.0.1:${port}/api/library/record/doc.x?quiet=1`);
+    assert.equal(found.status, 200);
+    assert.equal(JSON.parse((await found.json()).value).data.text, 'eins');
 
     const read = await (await fetch(url)).json();
     assert.equal(`"${read.rev}"`, rev);
@@ -668,6 +675,18 @@ test('serve: --cert without --key is refused', async () => {
 // ---------------------------------------------------------------------------
 // Home-Assistant-Add-on (chordwright-data)
 // ---------------------------------------------------------------------------
+
+test('addon: every certificate parses — the random serial is always valid DER', async () => {
+  // Eine zufällige Seriennummer mit führendem 0x00 war nicht minimal kodiert;
+  // OpenSSL 3 lehnte etwa jedes zweihundertste Zertifikat ab. Tausend Stück
+  // hätten das fast sicher getroffen.
+  const { createCA, issueServerCert } = await import(join(ADDON, 'certs.mjs'));
+  const ca = createCA();
+  for (let i = 0; i < 1000; i++) {
+    new X509Certificate(createCA().cert);
+    new X509Certificate(issueServerCert(ca, { dnsNames: ['a.local'], ips: ['127.0.0.1'] }).cert);
+  }
+});
 
 test('addon: the CA and the server certificate it issues are what browsers and openssl accept', async () => {
   const { createCA, issueServerCert, SERVER_VALIDITY_DAYS } = await import(join(ADDON, 'certs.mjs'));
