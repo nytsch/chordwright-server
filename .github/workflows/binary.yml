@@ -66,8 +66,10 @@ jobs:
       - name: Startet
         run: |
           mkdir data
-          ./chordwright-server-universal-apple-darwin --dir data --port 0 --ready-json --exit-with-stdin > ready.txt &
-          for i in $(seq 50); do [ -s ready.txt ] && break; sleep 0.2; done
+          # Ein Hintergrundjob bekommt /dev/null als stdin, und mit
+          # --exit-with-stdin wäre der Server sofort wieder weg; sleep hält es offen.
+          sleep 120 | ./chordwright-server-universal-apple-darwin --dir data --port 0 --ready-json --exit-with-stdin > ready.txt &
+          for i in $(seq 150); do [ -s ready.txt ] && break; sleep 0.2; done
           cat ready.txt
           url=$(node -p "JSON.parse(require('fs').readFileSync('ready.txt','utf8').split('\n')[0]).url")
           curl -sf "$url/api/health"
