@@ -9,13 +9,13 @@
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { spawn, execFileSync } from 'node:child_process';
+import { spawn, spawnSync, execFileSync } from 'node:child_process';
 import { mkdtemp, readFile, readdir, writeFile, mkdir } from 'node:fs/promises';
 import { readFileSync } from 'node:fs';
 import { request as httpsRequest } from 'node:https';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { X509Certificate } from 'node:crypto';
 import { createStore } from '../chordwright-data/server/store.mjs';
 import { createBackups } from '../chordwright-data/server/backups.mjs';
@@ -71,7 +71,12 @@ async function launch(args, { env = {}, scheme = 'http', port } = {}) {
   return {
     output: () => output,
     stop: async () => {
-      child.kill('SIGTERM');
+      // Windows has no SIGTERM: kill() ends the process outright, and the
+      // add-on's start.mjs never gets to stop the server it started — which
+      // lives on, holding our pipes open, and the test run never ends. So the
+      // whole tree there.
+      if (process.platform === 'win32') spawnSync('taskkill', ['/pid', String(child.pid), '/t', '/f']);
+      else child.kill('SIGTERM');
       await exited;
     },
   };
@@ -725,7 +730,7 @@ test('addon: every certificate parses — the random serial is always valid DER'
   // Eine zufällige Seriennummer mit führendem 0x00 war nicht minimal kodiert;
   // OpenSSL 3 lehnte etwa jedes zweihundertste Zertifikat ab. Tausend Stück
   // hätten das fast sicher getroffen.
-  const { createCA, issueServerCert } = await import(join(ADDON, 'certs.mjs'));
+  const { createCA, issueServerCert } = await import(pathToFileURL(join(ADDON, 'certs.mjs')).href);
   const ca = createCA();
   for (let i = 0; i < 1000; i++) {
     new X509Certificate(createCA().cert);
@@ -734,7 +739,7 @@ test('addon: every certificate parses — the random serial is always valid DER'
 });
 
 test('addon: the CA and the server certificate it issues are what browsers and openssl accept', async () => {
-  const { createCA, issueServerCert, SERVER_VALIDITY_DAYS } = await import(join(ADDON, 'certs.mjs'));
+  const { createCA, issueServerCert, SERVER_VALIDITY_DAYS } = await import(pathToFileURL(join(ADDON, 'certs.mjs')).href);
   const dir = await tempDir();
   const ca = createCA();
   const server = issueServerCert(ca, { dnsNames: ['homeassistant.local', 'ha.fritz.box'], ips: ['127.0.0.1', '192.168.68.123', 'fd00::5'] });
@@ -902,7 +907,7 @@ test('addon: extra hostnames go into the certificate; an expiring one is renewed
   }
 
   // A server certificate with 15 days left is replaced — by the same CA.
-  const { issueServerCert } = await import(join(ADDON, 'certs.mjs'));
+  const { issueServerCert } = await import(pathToFileURL(join(ADDON, 'certs.mjs')).href);
   const old = issueServerCert(
     { cert: caPem, key: await readFile(join(dirs.data, 'ca-key.pem'), 'utf8') },
     { dnsNames: ['homeassistant.local'], ips: ['127.0.0.1'], now: new Date(Date.now() - 810 * 86_400_000) },

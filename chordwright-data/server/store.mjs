@@ -34,6 +34,24 @@ const SIDECAR = '_documents.json';
 const DEFAULT_ENVELOPE_VERSION = 1;
 
 /**
+ * Windows refuses to rename onto a file someone else has open at that moment
+ * (EPERM, EACCES, EBUSY) — a reader of the same file, the virus scanner, the
+ * search indexer. It lets go within milliseconds, so try again for a while
+ * instead of failing the write. Elsewhere a rename onto an open file just works.
+ */
+const BUSY = new Set(['EPERM', 'EACCES', 'EBUSY']);
+async function renameOver(from, to) {
+  for (let wait = 5; ; wait *= 2) {
+    try {
+      return await rename(from, to);
+    } catch (err) {
+      if (process.platform !== 'win32' || !BUSY.has(err.code) || wait > 1000) throw err;
+      await new Promise((r) => setTimeout(r, wait));
+    }
+  }
+}
+
+/**
  * Write through a temporary file and rename it into place. A reader — the app,
  * the watcher, the next write's read-modify-write — sees the old file or the
  * new one, never half of one. The temp name starts with a dot and ends in
@@ -44,7 +62,7 @@ export async function writeAtomic(path, body) {
   const tmp = join(dirname(path), `.${basename(path)}.${process.pid}.${++tmpCounter}.tmp`);
   try {
     await writeFile(tmp, body);
-    await rename(tmp, path);
+    await renameOver(tmp, path);
   } catch (err) {
     await rm(tmp, { force: true });
     throw err;
