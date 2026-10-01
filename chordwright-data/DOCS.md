@@ -94,6 +94,12 @@ Jede Sicherung ist ein normaler Ordner. Einen einzelnen Song holst du per Samba 
 
 Die Sicherungen liegen auf demselben Rechner wie die Bibliothek. Gegen einen Ausfall des Rechners hilft nur eine Kopie woanders hin: Die Songs und die Sicherungen landen in Home-Assistant-Sicherungen, wenn darin der Ordner „Share" mitgesichert wird.
 
+## Gemeinsame Bühne
+
+Ab Version 1.4.0 kann ein Gerät auf der Bühne **leiten** und die anderen **folgen**: Das leitende Gerät gibt Set, Lied, Liedwechsel und Start vor, die folgenden machen mit, im Takt. Eingestellt wird das in der App unter *Einstellungen → Bühne → Gemeinsame Bühne*. Mehrere Bühnen (etwa zwei Bands) können gleichzeitig über denselben Server laufen; jede hat einen eigenen Namen.
+
+Am Add-on ist dafür nichts einzustellen. Es braucht keinen MQTT-Broker: Die Bühne läuft über dieselbe Verbindung wie die Bibliothek. Der Stand liegt nur im Speicher und verschwindet bei einem Neustart des Add-ons (das leitende Gerät stellt ihn nach wenigen Sekunden wieder her).
+
 ## Aktualisieren
 
 Neue Versionen erscheinen im Add-on-Store wie bei jedem anderen Add-on; **Aktualisieren** klicken. Die Songs, der Token und das Zertifikat bleiben erhalten.
