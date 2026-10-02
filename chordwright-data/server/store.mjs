@@ -41,11 +41,13 @@ const DEFAULT_ENVELOPE_VERSION = 1;
  */
 const BUSY = new Set(['EPERM', 'EACCES', 'EBUSY']);
 async function renameOver(from, to) {
-  for (let wait = 5; ; wait *= 2) {
+  // Short waits, often: each try is a race against the next open, and a busy
+  // reader leaves only brief gaps. Five seconds in all before giving up.
+  for (let waited = 0, wait = 5; ; waited += wait, wait = Math.min(wait * 2, 100)) {
     try {
       return await rename(from, to);
     } catch (err) {
-      if (process.platform !== 'win32' || !BUSY.has(err.code) || wait > 1000) throw err;
+      if (process.platform !== 'win32' || !BUSY.has(err.code) || waited > 5_000) throw err;
       await new Promise((r) => setTimeout(r, wait));
     }
   }

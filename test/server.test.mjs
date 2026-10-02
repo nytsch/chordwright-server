@@ -175,9 +175,13 @@ test('store: the sidecar is valid JSON at every moment of a write storm', async 
       await new Promise((r) => setImmediate(r));
     }
   })();
-  await Promise.all(Array.from({ length: 200 }, (_, i) => store.write('library', `doc.w${i}`, doc(`w${i}`))));
-  done = true;
-  await reader;
+  try {
+    await Promise.all(Array.from({ length: 200 }, (_, i) => store.write('library', `doc.w${i}`, doc(`w${i}`))));
+  } finally {
+    // Also when a write failed: a reader left running keeps the test file open forever.
+    done = true;
+    await reader;
+  }
 
   assert.ok(reads > 10, `reader ran (${reads} reads)`);
   assert.equal(broken, 0, 'a reader saw a half-written sidecar');
