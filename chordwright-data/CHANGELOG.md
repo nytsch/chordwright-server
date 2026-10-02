@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.5.0
+
+- Gemeinsame Bühne: Das leitende Gerät sieht, wer gerade folgt — mit Namen, und ob jemand gerade mitläuft oder sich abgekoppelt hat. Neue Schnittstelle `/api/stage/:raum/here`; der Bühnenstand nennt die Folgenden unter `followers`.
+
 ## 1.4.0
 
 - Gemeinsame Bühne: Ein Gerät leitet, die anderen folgen — Set, Lied, Liedwechsel und Start, im Takt. Mehrere Bühnen gleichzeitig, jede mit eigenem Namen. Neue Schnittstellen `/api/stage` und `/api/time`; die Bühnenstände gehen als benanntes Ereignis `stage` über `/api/events`.
