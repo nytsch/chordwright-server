@@ -36,6 +36,8 @@
  *   POST   /api/stage/:room/lead   → take or renew the lead; body { name, force }; 409 if led
  *   DELETE /api/stage/:room/lead   → let go of it
  *   PUT    /api/stage/:room        → the leader's state; body { state }; 403/409 if not leader
+ *   POST   /api/stage/:room/here   → a follower is there; body { name, attached }
+ *   DELETE /api/stage/:room/here   → and leaves
  * Stage changes also go out on /api/events as `event: stage` (stage.mjs).
  *   GET    /api/backups            → { backups: [...], everyHours, keep }
  *   POST   /api/backups            → a snapshot now → 201 { id, createdAt, … }
@@ -392,6 +394,13 @@ async function handleStage(req, res, rest) {
       return answer(stage.lead(room, { client, name: body.name ?? userOf(req), force: body.force === true }));
     }
     if (req.method === 'DELETE') return answer(stage.release(room, { client }));
+    return send(res, 405, { error: 'method not allowed' });
+  }
+  if (rest.length === 2 && rest[1] === 'here') {
+    if (req.method === 'POST') {
+      return answer(stage.here(room, { client, name: body.name ?? userOf(req), attached: body.attached !== false }));
+    }
+    if (req.method === 'DELETE') return answer(stage.leave(room, { client }));
     return send(res, 405, { error: 'method not allowed' });
   }
   return send(res, 404, { error: 'not found' });

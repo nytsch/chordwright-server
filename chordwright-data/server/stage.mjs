@@ -21,9 +21,17 @@
  * a leader that went quiet — battery, wifi, the phone in a pocket — loses the
  * room after `leaseMs` and anyone may take it. Taking a room someone still
  * holds needs `force`: the app asks first.
+ *
+ * Followers say they are there, the same way: `here` every few seconds, with
+ * their name and whether they are going along right now or have stepped off
+ * (`attached`). The leader reads them from the snapshot. A follower that goes
+ * quiet drops out after `presenceMs`. Joining, leaving and stepping on or off
+ * are changes everyone hears about; a follower that only says "still here" is
+ * not.
  */
 
 export const LEASE_MS = 15_000;
+export const PRESENCE_MS = 12_000;
 /** A room nobody leads and nobody wrote to for this long is forgotten. */
 export const IDLE_MS = 12 * 60 * 60 * 1000;
 export const MAX_STATE_BYTES = 8 * 1024;
@@ -48,8 +56,11 @@ function cleanName(raw) {
 /**
  * @param {{ now?: () => number, leaseMs?: number, onChange?: (snapshot) => void }} [options]
  */
-export function createStage({ now = Date.now, leaseMs = LEASE_MS, onChange = () => {} } = {}) {
-  /** room → { leader: { client, name, until } | null, state, rev, touched } */
+export function createStage({ now = Date.now, leaseMs = LEASE_MS, presenceMs = PRESENCE_MS, onChange = () => {} } = {}) {
+  /**
+   * room → { leader: { client, name, until } | null, state, rev, touched,
+   *          followers: Map<client, { name, attached, until }> }
+   */
   const rooms = new Map();
 
   const live = (leader) => leader && leader.until > now();
@@ -57,9 +68,16 @@ export function createStage({ now = Date.now, leaseMs = LEASE_MS, onChange = () 
   function snapshot(room) {
     const entry = rooms.get(room);
     const leader = entry && live(entry.leader) ? entry.leader : null;
+    const followers = entry
+      ? [...entry.followers]
+          .filter(([client, f]) => f.until > now() && client !== leader?.client)
+          .map(([client, f]) => ({ client, name: f.name, attached: f.attached }))
+          .sort((a, b) => (a.name ?? '').localeCompare(b.name ?? '') || a.client.localeCompare(b.client))
+      : [];
     return {
       room,
       leader: leader ? { client: leader.client, name: leader.name, until: leader.until } : null,
+      followers,
       state: entry?.state ?? null,
       rev: entry?.rev ?? 0,
       now: now(),
@@ -69,7 +87,7 @@ export function createStage({ now = Date.now, leaseMs = LEASE_MS, onChange = () 
   function entryOf(room) {
     let entry = rooms.get(room);
     if (!entry) {
-      entry = { leader: null, state: null, rev: 0, touched: now() };
+      entry = { leader: null, state: null, rev: 0, touched: now(), followers: new Map() };
       rooms.set(room, entry);
     }
     return entry;
@@ -125,6 +143,30 @@ export function createStage({ now = Date.now, leaseMs = LEASE_MS, onChange = () 
     return { ok: true, ...snapshot(room) };
   }
 
+  /** A follower says it is there — and whether it is going along right now. */
+  function here(room, { client, name, attached = true }) {
+    if (!client) return { ok: false, status: 400, error: 'client id required' };
+    const entry = entryOf(room);
+    const was = entry.followers.get(client);
+    const next = { name: cleanName(name) ?? was?.name ?? null, attached: attached !== false, until: now() + presenceMs };
+    entry.followers.set(client, next);
+    entry.touched = now();
+    if (!was || was.until <= now() || was.name !== next.name || was.attached !== next.attached) {
+      entry.rev += 1;
+      onChange(snapshot(room));
+    }
+    return { ok: true, ...snapshot(room) };
+  }
+
+  /** A follower that leaves the stage says so, rather than fading out. */
+  function leave(room, { client }) {
+    const entry = rooms.get(room);
+    if (!entry || !entry.followers.delete(client)) return { ok: true, ...snapshot(room) };
+    entry.rev += 1;
+    onChange(snapshot(room));
+    return { ok: true, ...snapshot(room) };
+  }
+
   function read(room) {
     return snapshot(room);
   }
@@ -133,8 +175,14 @@ export function createStage({ now = Date.now, leaseMs = LEASE_MS, onChange = () 
   function list() {
     sweep();
     return [...rooms.keys()].sort().map((room) => {
-      const { leader, rev } = snapshot(room);
-      return { room, leader: leader ? { name: leader.name } : null, rev, touched: rooms.get(room).touched };
+      const { leader, rev, followers } = snapshot(room);
+      return {
+        room,
+        leader: leader ? { name: leader.name } : null,
+        followers: followers.length,
+        rev,
+        touched: rooms.get(room).touched,
+      };
     });
   }
 
@@ -145,14 +193,24 @@ export function createStage({ now = Date.now, leaseMs = LEASE_MS, onChange = () 
   function sweep() {
     const t = now();
     for (const [room, entry] of rooms) {
+      let changed = false;
       if (entry.leader && entry.leader.until <= t) {
         entry.leader = null;
+        changed = true;
+      }
+      for (const [client, f] of entry.followers) {
+        if (f.until <= t) {
+          entry.followers.delete(client);
+          changed = true;
+        }
+      }
+      if (changed) {
         entry.rev += 1;
         onChange(snapshot(room));
       }
-      if (!entry.leader && t - entry.touched > IDLE_MS) rooms.delete(room);
+      if (!entry.leader && entry.followers.size === 0 && t - entry.touched > IDLE_MS) rooms.delete(room);
     }
   }
 
-  return { lead, release, publish, read, list, sweep };
+  return { lead, release, publish, here, leave, read, list, sweep };
 }
