@@ -96,7 +96,7 @@ Die Sicherungen liegen auf demselben Rechner wie die Bibliothek. Gegen einen Aus
 
 ## Gemeinsame Bühne
 
-Ab Version 1.4.0 kann ein Gerät auf der Bühne **leiten** und die anderen **folgen**: Das leitende Gerät gibt Set, Lied, Liedwechsel und Start vor, die folgenden machen mit, im Takt. Eingestellt wird das in der App unter *Einstellungen → Bühne → Gemeinsame Bühne*. Mehrere Bühnen (etwa zwei Bands) können gleichzeitig über denselben Server laufen; jede hat einen eigenen Namen.
+Ab Version 1.4.0 kann ein Gerät auf der Bühne **leiten** und die anderen **folgen**: Das leitende Gerät gibt Set, Lied, Liedwechsel und Start vor, die folgenden machen mit, im Takt. Eingestellt wird das in der App unter *Einstellungen → Bühne → Gemeinsame Bühne*. Das leitende Gerät sieht, wer gerade folgt und wer sich abgekoppelt hat. Mehrere Bühnen (etwa zwei Bands) können gleichzeitig über denselben Server laufen; jede hat einen eigenen Namen.
 
 Am Add-on ist dafür nichts einzustellen. Es braucht keinen MQTT-Broker: Die Bühne läuft über dieselbe Verbindung wie die Bibliothek. Der Stand liegt nur im Speicher und verschwindet bei einem Neustart des Add-ons (das leitende Gerät stellt ihn nach wenigen Sekunden wieder her).
 

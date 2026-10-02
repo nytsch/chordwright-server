@@ -153,11 +153,13 @@ DELETE /api/backups/:id                                              → 204 | 4
 GET    /api/changes?limit=50      → { changes: [{ db, key, at, by, action }] }   newest first
 GET    /api/changes?db=&key=      → { change: { at, by, action } | null }
 GET    /api/time                  → { now }   the server's clock in ms
-GET    /api/stage                 → { now, rooms: [{ room, leader: { name } | null, rev, touched }] }
-GET    /api/stage/:room           → { room, leader: { client, name, until } | null, state, rev, now }
+GET    /api/stage                 → { now, rooms: [{ room, leader: { name } | null, followers: n, rev, touched }] }
+GET    /api/stage/:room           → { room, leader: { client, name, until } | null, followers: [{ client, name, attached }], state, rev, now }
 POST   /api/stage/:room/lead      ← { name?, force? }  → 200 snapshot | 409 snapshot (someone else leads)
 DELETE /api/stage/:room/lead                                         → 200 snapshot
 PUT    /api/stage/:room           ← { state }          → 200 snapshot | 403 not the leader | 409 nobody leads
+POST   /api/stage/:room/here      ← { name?, attached? } → 200 snapshot   (a follower is there)
+DELETE /api/stage/:room/here                                         → 200 snapshot
 ```
 
 `:db` is `library` or `user`. Keys are file names: letters, digits, `.`, `_`,
@@ -235,6 +237,11 @@ at once — two bands on one server share a library, not a stage.
 - **Changes go out on `/api/events`** as a *named* event, `event: stage`, with
   the same snapshot as `GET /api/stage/:room`. An app that only listens with
   `onmessage` never sees them.
+- **Who follows.** Followers announce themselves with `POST …/here` every few
+  seconds, saying whether they are going along right now (`attached`) or have
+  stepped off. They are listed in `followers` (never the leader itself) and
+  drop out after 12 seconds of silence. Joining, leaving and stepping on or off
+  go out as events; a plain "still here" does not.
 - **Memory only.** Nothing of it is written to disk: after a restart the
   leader's next write brings the room back.
 

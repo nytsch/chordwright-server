@@ -689,7 +689,7 @@ test('stage: lead, publish, lease, takeover, several rooms side by side', () => 
 
   // Nobody leads: a write is refused, reading is fine.
   assert.equal(stage.publish('band', { client: 'a', state: {} }).status, 409);
-  assert.deepEqual(stage.read('band'), { room: 'band', leader: null, state: null, rev: 0, now: 1_000 });
+  assert.deepEqual(stage.read('band'), { room: 'band', leader: null, followers: [], state: null, rev: 0, now: 1_000 });
 
   const led = stage.lead('band', { client: 'a', name: '  Niko ' });
   assert.equal(led.ok, true);
@@ -733,6 +733,43 @@ test('stage: lead, publish, lease, takeover, several rooms side by side', () => 
   assert.equal(stage.read('band').leader.client, 'b');
   stage.release('band', { client: 'b' });
   assert.equal(stage.read('band').leader, null);
+});
+
+test('stage: followers say they are there, step off, leave and fade out', () => {
+  let t = 1_000;
+  const changes = [];
+  const stage = createStage({ now: () => t, leaseMs: 10_000, presenceMs: 5_000, onChange: (snap) => changes.push(snap) });
+  stage.lead('band', { client: 'lead', name: 'Niko' });
+
+  assert.equal(stage.here('band', { client: '' }).status, 400);
+  stage.here('band', { client: 'b', name: 'Bass' });
+  stage.here('band', { client: 'k', name: 'Keys' });
+  // The leader itself is never listed as following.
+  stage.here('band', { client: 'lead', name: 'Niko' });
+  assert.deepEqual(stage.read('band').followers, [
+    { client: 'b', name: 'Bass', attached: true },
+    { client: 'k', name: 'Keys', attached: true },
+  ]);
+  assert.equal(stage.list()[0].followers, 2);
+
+  // "Still here" is not news; stepping off is.
+  const before = changes.length;
+  t = 2_000;
+  stage.here('band', { client: 'b', name: 'Bass' });
+  assert.equal(changes.length, before);
+  stage.here('band', { client: 'b', name: 'Bass', attached: false });
+  assert.equal(changes.length, before + 1);
+  assert.equal(stage.read('band').followers[0].attached, false);
+
+  stage.leave('band', { client: 'k' });
+  assert.deepEqual(stage.read('band').followers.map((f) => f.name), ['Bass']);
+
+  // Quiet for longer than presenceMs: gone, and the sweep says so.
+  t = 7_001;
+  stage.publish('band', { client: 'lead', state: {} });
+  stage.sweep();
+  assert.deepEqual(stage.read('band').followers, []);
+  assert.ok(changes.at(-1).followers.length === 0);
 });
 
 test('serve: shared stage over HTTP — token, lead, publish, SSE as a named event', async () => {
@@ -793,6 +830,14 @@ test('serve: shared stage over HTTP — token, lead, publish, SSE as a named eve
     assert.ok(named.some((e) => e.room === 'Die Band' && e.state?.songId === 'lied'), JSON.stringify(named));
     // Nothing of it on the unnamed channel an older app reads.
     assert.equal(plain.length, 0);
+
+    const here = await fetch(`${base}/stage/Die%20Band/here`, { method: 'POST', headers: as('b'), body: JSON.stringify({ name: 'Bass' }) });
+    assert.equal(here.status, 200);
+    assert.deepEqual((await here.json()).followers, [{ client: 'b', name: 'Bass', attached: true }]);
+    for (let i = 0; i < 100 && !named.some((e) => e.followers?.length === 1); i++) await new Promise((r) => setTimeout(r, 20));
+    assert.ok(named.some((e) => e.followers?.[0]?.name === 'Bass'), 'the leader hears who follows');
+    assert.equal((await fetch(`${base}/stage/Die%20Band/here`, { method: 'DELETE', headers: as('b') })).status, 200);
+    assert.deepEqual((await (await fetch(`${base}/stage/Die%20Band`, { headers: as('a') })).json()).followers, []);
 
     assert.equal((await fetch(`${base}/stage/Die%20Band/lead`, { method: 'DELETE', headers: as('a') })).status, 200);
     assert.equal((await (await fetch(`${base}/stage/Die%20Band`, { headers: as('b') })).json()).leader, null);
