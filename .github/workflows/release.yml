@@ -7,6 +7,9 @@
 #
 # Erst testen, dann veröffentlichen: ein Tag auf rotem Code wird kein Release.
 # Ein zweiter Lauf auf denselben Tag (Re-run) aktualisiert nur den Text.
+#
+# Dazu die Programmdateien des Servers für die Desktop-App (binary.yml):
+# chordwright-server-<rust-target>, als .tar.gz bzw. .zip, mit SHA256SUMS.
 
 name: release
 
@@ -62,3 +65,35 @@ jobs:
           else
             gh release create "$GITHUB_REF_NAME" --title "$GITHUB_REF_NAME" --notes-file notes.md --verify-tag
           fi
+
+  # Der Server als Programmdatei je Plattform, für die Desktop-App, die ihn
+  # mitliefert. Gebaut und getestet wie bei jedem Push (binary.yml).
+  binaries:
+    needs: release
+    uses: ./.github/workflows/binary.yml
+
+  attach:
+    needs: [release, binaries]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: chordwright-server-*
+          path: bin
+          merge-multiple: true
+      - name: An das Release hängen
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          cd bin
+          # Ausführbar bleibt eine Datei nur in einem Archiv; ein nackter
+          # Download hat kein x-Bit. Windows braucht keins.
+          for f in chordwright-server-*; do
+            case "$f" in
+              *.exe) zip -q "$f.zip" "$f" ;;
+              *) chmod +x "$f" && tar -czf "$f.tar.gz" "$f" ;;
+            esac
+          done
+          sha256sum *.tar.gz *.zip > SHA256SUMS
+          cat SHA256SUMS
+          gh release upload "$GITHUB_REF_NAME" *.tar.gz *.zip SHA256SUMS --clobber --repo "$GITHUB_REPOSITORY"

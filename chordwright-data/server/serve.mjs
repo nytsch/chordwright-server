@@ -71,6 +71,8 @@ function parseArgs(argv) {
     host: '127.0.0.1',
     token: '',
     insecure: false,
+    'ready-json': false,
+    'exit-with-stdin': false,
     cert: '',
     key: '',
     'ca-file': '',
@@ -79,10 +81,11 @@ function parseArgs(argv) {
   };
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i];
-    if (arg === '--insecure') args.insecure = true;
+    if (arg === '--insecure' || arg === '--ready-json' || arg === '--exit-with-stdin') args[arg.slice(2)] = true;
     else if (arg.startsWith('--')) args[arg.slice(2)] = argv[++i];
   }
-  args.port = Number(args.port) || 4174;
+  const port = Number(args.port);
+  args.port = Number.isInteger(port) && port >= 0 && port < 65536 && args.port !== '' ? port : 4174;
   const every = Number(args['backup-every']);
   args['backup-every'] = Number.isFinite(every) && every >= 0 ? every : 24;
   args['backup-keep'] = Math.max(1, Math.floor(Number(args['backup-keep'])) || 14);
@@ -469,19 +472,46 @@ function scheduleBackups() {
 
 const server = tls ? createSecureServer(tls, handle) : createServer(handle);
 
-await store.ensureLayout();
-watchFiles();
-// Runs out leases of leaders that went quiet, so their followers hear of it.
-setInterval(() => stage.sweep(), 2_000).unref?.();
-scheduleBackups();
+// No top-level await: the desktop build bundles this file to CommonJS for a
+// Node single executable (scripts/build-binary.mjs), and CommonJS has none.
+store.ensureLayout().then(
+  () => {
+    watchFiles();
+    // Runs out leases of leaders that went quiet, so their followers hear of it.
+    setInterval(() => stage.sweep(), 2_000).unref?.();
+    scheduleBackups();
+    server.listen(args.port, args.host, ready);
+  },
+  (err) => {
+    console.error(err);
+    process.exit(1);
+  },
+);
 
-server.listen(args.port, args.host, () => {
+function ready() {
+  // `--port 0` lets the system pick a free one; this is the one it picked.
+  const { port } = server.address();
+  // Without /api: this is what goes into the app, which adds the paths itself.
+  const url = `${tls ? 'https' : 'http'}://${args.host}:${port}`;
+  if (args['ready-json']) {
+    // For a program that started this one (the desktop app): one line it can
+    // parse, instead of the block below it would have to scrape.
+    console.log(JSON.stringify({ ready: true, url, port, dir: root }));
+    return;
+  }
   console.log(`chordwright serve`);
   console.log(`  data   ${root}`);
-  // Without /api: this is what goes into the app, which adds the paths itself.
-  console.log(`  url    ${tls ? 'https' : 'http'}://${args.host}:${args.port}`);
+  console.log(`  url    ${url}`);
   console.log(`  auth   ${args.token ? 'token required' : 'none (loopback only)'}`);
   console.log(
     `  backup ${args['backup-every'] ? `every ${args['backup-every']} h when changed, newest ${args['backup-keep']} kept` : 'on request only'}`,
   );
-});
+}
+
+// A server started by another program goes when that program goes — also when
+// it crashes and never gets to stop it. Its end of our stdin closes either way.
+if (args['exit-with-stdin']) {
+  process.stdin.on('end', () => process.exit(0));
+  process.stdin.on('error', () => process.exit(0));
+  process.stdin.resume();
+}

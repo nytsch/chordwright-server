@@ -1,0 +1,80 @@
+# Der Server als eigenständige Programmdatei je Plattform — das, was die
+# Desktop-App mitliefert (scripts/build-binary.mjs).
+#
+# Jede Datei wird auf ihrer eigenen Plattform gebaut und dort mit denselben
+# Tests geprüft wie der Server unter Node: eine Datei, die nicht startet oder
+# eine Änderung am Lied nicht meldet, soll hier auffallen, nicht in der App.
+#
+# Läuft bei jedem Push und PR, die den Server berühren, und als Baustein von
+# release.yml, das die Dateien an das Release hängt.
+
+name: binary
+
+on:
+  push:
+    paths: ['chordwright-data/server/**', 'scripts/**', 'test/**', '.github/workflows/binary.yml']
+  pull_request:
+    paths: ['chordwright-data/server/**', 'scripts/**', 'test/**', '.github/workflows/binary.yml']
+  workflow_call:
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: ubuntu-latest, target: x86_64-unknown-linux-gnu }
+          - { os: macos-latest, target: aarch64-apple-darwin }
+          - { os: macos-15-intel, target: x86_64-apple-darwin }
+          - { os: windows-latest, target: x86_64-pc-windows-msvc }
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: node scripts/build-binary.mjs --target ${{ matrix.target }}
+      - name: Tests gegen die Programmdatei
+        shell: bash
+        run: |
+          bin="$PWD/dist/chordwright-server-${{ matrix.target }}"
+          [ -f "$bin.exe" ] && bin="$bin.exe"
+          CHORDWRIGHT_SERVER_BIN="$bin" npm test
+      - uses: actions/upload-artifact@v4
+        with:
+          name: chordwright-server-${{ matrix.target }}
+          path: dist/chordwright-server-${{ matrix.target }}*
+          if-no-files-found: error
+
+  # Die Desktop-App wird für den Mac als ein Paket für Intel und Apple Silicon
+  # gebaut; Tauri sucht die mitgelieferte Datei dann unter diesem Namen.
+  universal:
+    needs: build
+    runs-on: macos-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: chordwright-server-*-apple-darwin
+          merge-multiple: true
+      - run: |
+          lipo -create -output chordwright-server-universal-apple-darwin \
+            chordwright-server-aarch64-apple-darwin chordwright-server-x86_64-apple-darwin
+          chmod +x chordwright-server-universal-apple-darwin
+          lipo -info chordwright-server-universal-apple-darwin
+          codesign --verify --verbose chordwright-server-universal-apple-darwin
+      - name: Startet
+        run: |
+          mkdir data
+          # Ein Hintergrundjob bekommt /dev/null als stdin, und mit
+          # --exit-with-stdin wäre der Server sofort wieder weg; sleep hält es offen.
+          sleep 120 | ./chordwright-server-universal-apple-darwin --dir data --port 0 --ready-json --exit-with-stdin > ready.txt &
+          for i in $(seq 150); do [ -s ready.txt ] && break; sleep 0.2; done
+          cat ready.txt
+          url=$(node -p "JSON.parse(require('fs').readFileSync('ready.txt','utf8').split('\n')[0]).url")
+          curl -sf "$url/api/health"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: chordwright-server-universal-apple-darwin
+          path: chordwright-server-universal-apple-darwin
+          if-no-files-found: error

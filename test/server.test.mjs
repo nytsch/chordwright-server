@@ -9,13 +9,13 @@
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { spawn, execFileSync } from 'node:child_process';
+import { spawn, spawnSync, execFileSync } from 'node:child_process';
 import { mkdtemp, readFile, readdir, writeFile, mkdir } from 'node:fs/promises';
 import { readFileSync } from 'node:fs';
 import { request as httpsRequest } from 'node:https';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { X509Certificate } from 'node:crypto';
 import { createStore } from '../chordwright-data/server/store.mjs';
 import { createBackups } from '../chordwright-data/server/backups.mjs';
@@ -32,9 +32,20 @@ const doc = (id, text = `{title: ${id}}\n[C]la`, origin = 'seed') =>
 
 let nextPort = 20000 + Math.floor(Math.random() * 20000);
 
+/**
+ * Which program runs serve.mjs. Normally this Node; with
+ * CHORDWRIGHT_SERVER_BIN set, the compiled binary instead (npm run build:bin),
+ * so the same tests check what the desktop app ships. start.mjs is the add-on's
+ * and always runs under Node.
+ */
+const BIN = process.env.CHORDWRIGHT_SERVER_BIN;
+function command(args) {
+  return BIN && args[0] === join(SERVER, 'serve.mjs') ? [BIN, args.slice(1)] : [process.execPath, args];
+}
+
 /** Start a process that runs the server, wait for /api/health, hand back a stopper. */
 async function launch(args, { env = {}, scheme = 'http', port } = {}) {
-  const child = spawn(process.execPath, args, {
+  const child = spawn(...command(args), {
     env: { ...process.env, ...env },
     stdio: ['ignore', 'pipe', 'pipe'],
   });
@@ -61,7 +72,12 @@ async function launch(args, { env = {}, scheme = 'http', port } = {}) {
   return {
     output: () => output,
     stop: async () => {
-      child.kill('SIGTERM');
+      // Windows has no SIGTERM: kill() ends the process outright, and the
+      // add-on's start.mjs never gets to stop the server it started — which
+      // lives on, holding our pipes open, and the test run never ends. So the
+      // whole tree there.
+      if (process.platform === 'win32') spawnSync('taskkill', ['/pid', String(child.pid), '/t', '/f']);
+      else child.kill('SIGTERM');
       await exited;
     },
   };
@@ -159,9 +175,13 @@ test('store: the sidecar is valid JSON at every moment of a write storm', async 
       await new Promise((r) => setImmediate(r));
     }
   })();
-  await Promise.all(Array.from({ length: 200 }, (_, i) => store.write('library', `doc.w${i}`, doc(`w${i}`))));
-  done = true;
-  await reader;
+  try {
+    await Promise.all(Array.from({ length: 200 }, (_, i) => store.write('library', `doc.w${i}`, doc(`w${i}`))));
+  } finally {
+    // Also when a write failed: a reader left running keeps the test file open forever.
+    done = true;
+    await reader;
+  }
 
   assert.ok(reads > 10, `reader ran (${reads} reads)`);
   assert.equal(broken, 0, 'a reader saw a half-written sidecar');
@@ -627,6 +647,40 @@ test('serve: file edits reach SSE listeners, also after an atomic replace', asyn
   }
 });
 
+test('serve: as the desktop app starts it — free port, one JSON line, gone with its parent', async () => {
+  const dir = await tempDir();
+  const child = spawn(
+    ...command([join(SERVER, 'serve.mjs'), '--dir', dir, '--port', '0', '--token', 't', '--ready-json', '--exit-with-stdin']),
+    { stdio: ['pipe', 'pipe', 'pipe'] },
+  );
+  const exited = new Promise((r) => child.on('exit', (code) => r(code)));
+  try {
+    let out = '';
+    const line = await new Promise((resolve, reject) => {
+      const timer = setTimeout(() => reject(new Error(`no ready line:\n${out}`)), 10_000);
+      child.stdout.on('data', (d) => {
+        out += d;
+        if (out.includes('\n')) {
+          clearTimeout(timer);
+          resolve(out.split('\n')[0]);
+        }
+      });
+    });
+    const ready = JSON.parse(line);
+    assert.equal(ready.ready, true);
+    assert.ok(ready.port > 0 && ready.port !== 4174, `a port of the system's choosing: ${ready.port}`);
+    assert.equal(ready.url, `http://127.0.0.1:${ready.port}`);
+    const res = await get(`${ready.url}/api/library`, { authorization: 'Bearer t' });
+    assert.equal(res.status, 200);
+  } finally {
+    // The app closes its end — or crashes, which closes it just the same.
+    child.stdin.end();
+  }
+  const code = await Promise.race([exited, new Promise((r) => setTimeout(() => r('still running'), 5_000))]);
+  if (code === 'still running') child.kill();
+  assert.equal(code, 0);
+});
+
 test('stage: lead, publish, lease, takeover, several rooms side by side', () => {
   let t = 1_000;
   const changes = [];
@@ -834,7 +888,7 @@ test('serve: https with --cert/--key, token enforced', async () => {
 
 test('serve: --cert without --key is refused', async () => {
   const dir = await tempDir();
-  const child = spawn(process.execPath, [join(SERVER, 'serve.mjs'), '--dir', dir, '--port', String(nextPort++), '--cert', 'x.pem'], {
+  const child = spawn(...command([join(SERVER, 'serve.mjs'), '--dir', dir, '--port', String(nextPort++), '--cert', 'x.pem']), {
     stdio: ['ignore', 'pipe', 'pipe'],
   });
   let err = '';
@@ -852,7 +906,7 @@ test('addon: every certificate parses — the random serial is always valid DER'
   // Eine zufällige Seriennummer mit führendem 0x00 war nicht minimal kodiert;
   // OpenSSL 3 lehnte etwa jedes zweihundertste Zertifikat ab. Tausend Stück
   // hätten das fast sicher getroffen.
-  const { createCA, issueServerCert } = await import(join(ADDON, 'certs.mjs'));
+  const { createCA, issueServerCert } = await import(pathToFileURL(join(ADDON, 'certs.mjs')).href);
   const ca = createCA();
   for (let i = 0; i < 1000; i++) {
     new X509Certificate(createCA().cert);
@@ -861,7 +915,7 @@ test('addon: every certificate parses — the random serial is always valid DER'
 });
 
 test('addon: the CA and the server certificate it issues are what browsers and openssl accept', async () => {
-  const { createCA, issueServerCert, SERVER_VALIDITY_DAYS } = await import(join(ADDON, 'certs.mjs'));
+  const { createCA, issueServerCert, SERVER_VALIDITY_DAYS } = await import(pathToFileURL(join(ADDON, 'certs.mjs')).href);
   const dir = await tempDir();
   const ca = createCA();
   const server = issueServerCert(ca, { dnsNames: ['homeassistant.local', 'ha.fritz.box'], ips: ['127.0.0.1', '192.168.68.123', 'fd00::5'] });
@@ -1029,7 +1083,7 @@ test('addon: extra hostnames go into the certificate; an expiring one is renewed
   }
 
   // A server certificate with 15 days left is replaced — by the same CA.
-  const { issueServerCert } = await import(join(ADDON, 'certs.mjs'));
+  const { issueServerCert } = await import(pathToFileURL(join(ADDON, 'certs.mjs')).href);
   const old = issueServerCert(
     { cert: caPem, key: await readFile(join(dirs.data, 'ca-key.pem'), 'utf8') },
     { dnsNames: ['homeassistant.local'], ips: ['127.0.0.1'], now: new Date(Date.now() - 810 * 86_400_000) },

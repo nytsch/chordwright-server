@@ -43,6 +43,26 @@ Then in the app: **Einstellungen → Datenquelle**, enter the address (and the
 token, if you set one), *Testen*, *Verbinden*. The app reloads and now reads and
 writes that folder.
 
+## As a single executable
+
+Every release carries the server as one file per platform, Node included —
+what the Chordwright desktop app ships to keep a library in a folder on the same
+machine. Named by Rust target, the way Tauri looks for a bundled program:
+`chordwright-server-aarch64-apple-darwin`, `…-x86_64-apple-darwin`,
+`…-universal-apple-darwin`, `…-x86_64-pc-windows-msvc.exe`,
+`…-x86_64-unknown-linux-gnu`. Same flags as above.
+
+Built as a Node single executable application, not with Bun: Bun's `fs.watch`
+reports a save-by-rename under the old name only, and that is how this server
+and most editors save — the app would never hear of the edit. To build one for
+this machine, or another target (macOS targets on a Mac only):
+
+```sh
+npm run build:bin                                   # dist/chordwright-server-<target>
+node scripts/build-binary.mjs --target x86_64-pc-windows-msvc
+CHORDWRIGHT_SERVER_BIN=$PWD/dist/chordwright-server-<target> npm test
+```
+
 ## What the folder looks like
 
 ```
@@ -92,6 +112,10 @@ wrote it.
 | `--ca-file` | none | PEM of the CA that signed `--cert`, served at `GET /ca.crt` (public) |
 | `--backup-every` | `24` | hours between automatic snapshots, taken only when something changed; `0` = on request only |
 | `--backup-keep` | `14` | how many automatic snapshots are kept |
+| `--ready-json` | off | once listening, print one line `{"ready":true,"url","port","dir"}` instead of the banner |
+| `--exit-with-stdin` | off | exit when stdin closes — the program that started the server is gone |
+
+`--port 0` lets the system pick a free port; `--ready-json` says which.
 
 Binding to anything but loopback without a token is **refused**, not warned
 about: an open port in a venue's wifi puts every song within reach of anyone on

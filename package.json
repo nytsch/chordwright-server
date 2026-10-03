@@ -1,6 +1,6 @@
 {
   "name": "chordwright-server",
-  "version": "1.5.0",
+  "version": "1.6.0",
   "description": "A folder of .chordpro files, served to the Chordwright app — with revisions, conflict detection and a Home Assistant add-on.",
   "license": "MIT",
   "type": "module",
@@ -9,7 +9,8 @@
   "bin": { "chordwright-server": "chordwright-data/server/serve.mjs" },
   "scripts": {
     "start": "node chordwright-data/server/serve.mjs --dir ./data",
-    "test": "node --test test/server.test.mjs"
+    "test": "node --test --test-timeout=60000 test/server.test.mjs",
+    "build:bin": "node scripts/build-binary.mjs"
   },
   "repository": { "type": "git", "url": "https://github.com/nytsch/chordwright-server.git" }
 }
