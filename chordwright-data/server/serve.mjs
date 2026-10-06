@@ -58,10 +58,12 @@
 import { createServer } from 'node:http';
 import { createServer as createSecureServer } from 'node:https';
 import { readFileSync, watch } from 'node:fs';
+import { hostname, networkInterfaces } from 'node:os';
 import { join, resolve } from 'node:path';
 import { createStore, DATABASES, isValidKey } from './store.mjs';
 import { createBackups } from './backups.mjs';
 import { createJournal } from './changes.mjs';
+import { ensureOwnCertificate } from '../certs.mjs';
 import { createStage, cleanRoom } from './stage.mjs';
 
 function parseArgs(argv) {
@@ -76,6 +78,9 @@ function parseArgs(argv) {
     cert: '',
     key: '',
     'ca-file': '',
+    'own-ca': '',
+    hostnames: '',
+    'loopback-port': '',
     'backup-every': 24,
     'backup-keep': 14,
   };
@@ -134,6 +139,40 @@ if (exposed && !args.token && !args.insecure) {
 if (Boolean(args.cert) !== Boolean(args.key)) {
   console.error('--cert and --key go together: pass both, or neither.');
   process.exit(1);
+}
+
+/**
+ * Where devices in the network reach this machine: its name (also as
+ * `<name>.local`, which macOS, iOS and Windows resolve over mDNS) and its
+ * IPv4 addresses. IPv6 is left out: a server bound to 0.0.0.0 does not answer
+ * on it.
+ */
+function lanAddresses() {
+  const base = hostname().replace(/\.local$/i, '');
+  const ips = Object.values(networkInterfaces())
+    .flat()
+    .filter((i) => i && !i.internal && i.family === 'IPv4')
+    .map((i) => i.address);
+  return [...new Set([`${base}.local`, base, ...ips])];
+}
+
+// `--own-ca <dir>`: https with a certificate authority of its own, kept in
+// that folder — the same one the Home Assistant add-on makes (certs.mjs), for
+// a server the desktop app shares in the network. The CA is installed once per
+// device; the certificate it issues names every address of this machine and is
+// issued anew when one changes.
+const extraNames = String(args.hostnames || '')
+  .split(',')
+  .map((h) => h.trim())
+  .filter(Boolean);
+const own =
+  !args.cert && args['own-ca']
+    ? ensureOwnCertificate(resolve(args['own-ca']), ['localhost', '127.0.0.1', ...lanAddresses(), ...extraNames])
+    : null;
+if (own) {
+  args.cert = own.cert;
+  args.key = own.key;
+  args['ca-file'] ||= own.ca;
 }
 const tls = args.cert ? { cert: readFileSync(args.cert), key: readFileSync(args.key) } : null;
 
@@ -472,36 +511,66 @@ function scheduleBackups() {
 
 const server = tls ? createSecureServer(tls, handle) : createServer(handle);
 
+// `--loopback-port <n>`: the same server once more, as plain http on
+// 127.0.0.1 — for the program that started it, on the same machine. The
+// desktop app's own window would otherwise have to trust the CA too, and
+// cannot be made to; on loopback, http is what every browser allows anyway.
+const loopback = args['loopback-port'] !== '' ? createServer(handle) : null;
+const listening = (srv, port, host) =>
+  new Promise((ok, fail) => {
+    srv.once('error', fail);
+    srv.listen(port, host, () => ok(srv.address().port));
+  });
+
 // No top-level await: the desktop build bundles this file to CommonJS for a
 // Node single executable (scripts/build-binary.mjs), and CommonJS has none.
-store.ensureLayout().then(
-  () => {
+store
+  .ensureLayout()
+  .then(() => {
     watchFiles();
     // Runs out leases of leaders that went quiet, so their followers hear of it.
     setInterval(() => stage.sweep(), 2_000).unref?.();
     scheduleBackups();
-    server.listen(args.port, args.host, ready);
-  },
-  (err) => {
+    return Promise.all([
+      listening(server, args.port, args.host),
+      loopback ? listening(loopback, Number(args['loopback-port']) || 0, '127.0.0.1') : null,
+    ]);
+  })
+  .then(([port, loopbackPort]) => ready(port, loopbackPort))
+  .catch((err) => {
+    // A port taken by another program, a folder that cannot be written: say
+    // so and go, rather than sit there half started.
     console.error(err);
     process.exit(1);
-  },
-);
+  });
 
-function ready() {
+function ready(port, loopbackPort) {
   // `--port 0` lets the system pick a free one; this is the one it picked.
-  const { port } = server.address();
   // Without /api: this is what goes into the app, which adds the paths itself.
   const url = `${tls ? 'https' : 'http'}://${args.host}:${port}`;
+  const scheme = tls ? 'https' : 'http';
+  // Where other devices find it, when it listens beyond this machine.
+  const lan = exposed ? lanAddresses().map((a) => `${scheme}://${a}:${port}`) : [];
   if (args['ready-json']) {
     // For a program that started this one (the desktop app): one line it can
-    // parse, instead of the block below it would have to scrape.
-    console.log(JSON.stringify({ ready: true, url, port, dir: root }));
+    // parse, instead of the block below it would have to scrape. With a
+    // loopback listener, `url` is that one — the starter's own way in.
+    console.log(
+      JSON.stringify({
+        ready: true,
+        url: loopbackPort != null ? `http://127.0.0.1:${loopbackPort}` : url,
+        port: loopbackPort ?? port,
+        dir: root,
+        ...(exposed ? { lan: { port, urls: lan, ca: Boolean(caDer) } } : {}),
+      }),
+    );
     return;
   }
   console.log(`chordwright serve`);
   console.log(`  data   ${root}`);
   console.log(`  url    ${url}`);
+  for (const u of lan) console.log(`         ${u}`);
+  if (loopbackPort != null) console.log(`  local  http://127.0.0.1:${loopbackPort}`);
   console.log(`  auth   ${args.token ? 'token required' : 'none (loopback only)'}`);
   console.log(
     `  backup ${args['backup-every'] ? `every ${args['backup-every']} h when changed, newest ${args['backup-keep']} kept` : 'on request only'}`,

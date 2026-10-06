@@ -15,11 +15,11 @@
  */
 
 import { spawn } from 'node:child_process';
-import { randomBytes, X509Certificate } from 'node:crypto';
+import { randomBytes } from 'node:crypto';
 import { copyFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { createCA, issueServerCert } from './certs.mjs';
+import { ensureOwnCertificate } from './certs.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const DATA = process.env.ADDON_DATA_DIR ?? '/data';
@@ -30,7 +30,6 @@ const SUPERVISOR = process.env.ADDON_SUPERVISOR_URL ?? 'http://supervisor';
 
 /** Namen, die jedes Zertifikat trägt — die üblichen Adressen eines Home Assistant. */
 const DEFAULT_NAMES = ['homeassistant.local', 'homeassistant', 'localhost'];
-const DAY = 24 * 60 * 60 * 1000;
 
 function readOptions() {
   try {
@@ -83,65 +82,19 @@ async function hostAddresses() {
   }
 }
 
-const isIp = (s) => /^\d{1,3}(\.\d{1,3}){3}$/.test(s) || s.includes(':');
-
-function readJson(path) {
-  try {
-    return JSON.parse(readFileSync(path, 'utf8'));
-  } catch {
-    return null;
-  }
-}
-
-function validFor(certPath, days) {
-  try {
-    return Date.parse(new X509Certificate(readFileSync(certPath)).validTo) - Date.now() > days * DAY;
-  } catch {
-    return false;
-  }
-}
-
 async function resolveTls(options) {
   if (options.ssl === false) return null;
   const cert = join(SSL, options.certfile ?? 'fullchain.pem');
   const key = join(SSL, options.keyfile ?? 'privkey.pem');
   if (existsSync(cert) && existsSync(key)) return { cert, key, own: false };
 
-  mkdirSync(DATA, { recursive: true });
-
-  // Die CA: einmal angelegt, dann für immer dieselbe — sie ist es, die auf den
-  // Geräten installiert ist. Nur eine, die bald abläuft, wird ersetzt.
-  const ca = { cert: join(DATA, 'ca-cert.pem'), key: join(DATA, 'ca-key.pem') };
-  let caRenewed = false;
-  if (!existsSync(ca.key) || !validFor(ca.cert, 60)) {
-    const fresh = createCA();
-    writeFileSync(ca.key, fresh.key, { mode: 0o600 });
-    writeFileSync(ca.cert, fresh.cert);
-    caRenewed = true;
-  }
-
-  // Das Server-Zertifikat: für jede Adresse, unter der man ihn erreicht. Ändert
-  // sich eine (neue IP im Router), wird es neu ausgestellt — die CA bleibt.
-  // Aus den Optionen (Home Assistant) oder CHORDWRIGHT_HOSTNAMES (docker compose).
+  // Das Zertifikat: für jede Adresse, unter der man ihn erreicht. Aus den
+  // Optionen (Home Assistant) oder CHORDWRIGHT_HOSTNAMES (docker compose).
+  // CA und Erneuerung: ensureOwnCertificate in certs.mjs.
   const fromEnv = (process.env.CHORDWRIGHT_HOSTNAMES ?? '').split(',');
-  const configured = [...(options.hostnames ?? []), ...fromEnv].map((h) => String(h).trim()).filter(Boolean);
-  const all = [...new Set([...DEFAULT_NAMES, '127.0.0.1', ...(await hostAddresses()), ...configured])];
-  const names = all.filter((h) => !isIp(h));
-  const ips = all.filter(isIp);
-  const wanted = JSON.stringify({ names, ips });
-
-  const own = { cert: join(DATA, 'server-cert.pem'), key: join(DATA, 'server-key.pem'), meta: join(DATA, 'server-cert.json') };
-  const current = readJson(own.meta);
-  if (caRenewed || !existsSync(own.key) || !validFor(own.cert, 30) || JSON.stringify(current) !== wanted) {
-    const fresh = issueServerCert(
-      { cert: readFileSync(ca.cert, 'utf8'), key: readFileSync(ca.key, 'utf8') },
-      { dnsNames: names, ips },
-    );
-    writeFileSync(own.key, fresh.key, { mode: 0o600 });
-    writeFileSync(own.cert, fresh.cert);
-    writeFileSync(own.meta, wanted + '\n');
-  }
-  return { cert: own.cert, key: own.key, ca: ca.cert, own: true, names, ips };
+  const configured = [...(options.hostnames ?? []), ...fromEnv];
+  const own = ensureOwnCertificate(DATA, [...DEFAULT_NAMES, '127.0.0.1', ...(await hostAddresses()), ...configured]);
+  return { ...own, own: true };
 }
 
 const options = readOptions();

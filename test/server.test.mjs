@@ -852,6 +852,70 @@ test('serve: shared stage over HTTP — token, lead, publish, SSE as a named eve
   }
 });
 
+test('serve: shared in the network — own CA, https outside, http on loopback for the starter', async () => {
+  const dir = await tempDir();
+  const caDir = join(dir, 'ca');
+  const child = spawn(
+    ...command([
+      join(SERVER, 'serve.mjs'), '--dir', join(dir, 'data'), '--host', '0.0.0.0', '--port', '0', '--token', 't',
+      '--own-ca', caDir, '--hostnames', 'buehne.fritz.box', '--loopback-port', '0', '--ready-json', '--exit-with-stdin',
+    ]),
+    { stdio: ['pipe', 'pipe', 'pipe'] },
+  );
+  const exited = new Promise((r) => child.on('exit', (code) => r(code)));
+  try {
+    let out = '';
+    const line = await new Promise((resolve, reject) => {
+      const timer = setTimeout(() => reject(new Error(`no ready line:\n${out}`)), 10_000);
+      child.stdout.on('data', (d) => {
+        out += d;
+        if (out.includes('\n')) {
+          clearTimeout(timer);
+          resolve(out.split('\n')[0]);
+        }
+      });
+    });
+    const ready = JSON.parse(line);
+
+    // The starter's way in: plain http on loopback, token still required.
+    assert.match(ready.url, /^http:\/\/127\.0\.0\.1:\d+$/);
+    assert.equal((await get(`${ready.url}/api/library`)).status, 401);
+    assert.equal((await get(`${ready.url}/api/library`, { authorization: 'Bearer t' })).status, 200);
+
+    // Everyone else's: https on its own port, under this machine's names.
+    assert.ok(ready.lan.port > 0 && ready.lan.port !== ready.port);
+    assert.equal(ready.lan.ca, true);
+    assert.ok(ready.lan.urls.every((u) => u.startsWith('https://') && u.endsWith(`:${ready.lan.port}`)), ready.lan.urls);
+    assert.ok(ready.lan.urls.some((u) => u.includes('.local:')), ready.lan.urls);
+
+    // A device that installed the CA trusts it — checked for real, not waved through.
+    const ca = readFileSync(join(caDir, 'ca-cert.pem'));
+    const trusted = await new Promise((resolve, reject) => {
+      const req = httpsRequest(
+        `https://127.0.0.1:${ready.lan.port}/api/health`,
+        { ca, rejectUnauthorized: true },
+        (res) => {
+          res.resume();
+          resolve(res.statusCode);
+        },
+      );
+      req.on('error', reject);
+      req.end();
+    });
+    assert.equal(trusted, 200);
+    const san = new X509Certificate(readFileSync(join(caDir, 'server-cert.pem'))).subjectAltName;
+    assert.match(san, /DNS:buehne\.fritz\.box/);
+    assert.match(san, /\.local/);
+    const crt = await get(`https://127.0.0.1:${ready.lan.port}/ca.crt`);
+    assert.equal(crt.status, 200);
+  } finally {
+    child.stdin.end();
+  }
+  const code = await Promise.race([exited, new Promise((r) => setTimeout(() => r('still running'), 5_000))]);
+  if (code === 'still running') child.kill();
+  assert.equal(code, 0);
+});
+
 test('serve: preflight answers Private Network Access', async () => {
   const dir = await tempDir();
   const port = nextPort++;

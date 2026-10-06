@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.7.0
+
+- Der Server kann sich selbst eine kleine Zertifizierungsstelle anlegen (`--own-ca <ordner>`), wie es das Add-on tut, und spricht damit https unter den Namen und Adressen des Rechners. Für die Desktop-App, die eine Bibliothek im WLAN freigibt.
+- `--loopback-port`: derselbe Server zusätzlich per http auf `127.0.0.1`, für das Programm, das ihn gestartet hat. `--ready-json` nennt dann beides: diese Adresse und die fürs Netz.
+- Ein belegter Port oder ein Ordner, in den der Server nicht schreiben darf, beendet ihn jetzt mit einer Meldung statt ihn halb gestartet stehen zu lassen.
+- Am Add-on ändert sich nichts; es nutzt dieselbe CA-Logik wie bisher, nur an anderer Stelle im Code.
+
 ## 1.6.0
 
 - Den Server gibt es jetzt auch als einzelne Programmdatei für macOS (Intel, Apple Silicon und beides in einem), Windows und Linux, ohne installiertes Node. Sie hängt an jedem Release und ist für die Desktop-App gedacht, die damit eine Bibliothek als Ordner auf demselben Rechner führen kann.
