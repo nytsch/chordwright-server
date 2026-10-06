@@ -17,6 +17,8 @@
  */
 
 import { X509Certificate, createHash, createPrivateKey, createPublicKey, generateKeyPairSync, randomBytes, sign } from 'node:crypto';
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { join } from 'node:path';
 
 export const CA_VALIDITY_DAYS = 3650;
 export const SERVER_VALIDITY_DAYS = 825;
@@ -159,4 +161,66 @@ export function issueServerCert(ca, { commonName = 'chordwright', dnsNames = [],
     ],
   });
   return { cert, key: privateKey.export({ type: 'pkcs8', format: 'pem' }) };
+}
+
+/** Gültig noch länger als `days` Tage? Nicht lesbar zählt als nein. */
+function validFor(certPath, days) {
+  try {
+    return Date.parse(new X509Certificate(readFileSync(certPath)).validTo) - Date.now() > days * DAY;
+  } catch {
+    return false;
+  }
+}
+
+const isIp = (s) => /^\d{1,3}(\.\d{1,3}){3}$/.test(s) || s.includes(':');
+
+/**
+ * Die eigene CA in `dir` und ein Zertifikat von ihr für `addresses` (Namen und
+ * IPs gemischt) — angelegt, wo es fehlt, erneuert, wo es bald abläuft oder
+ * nicht mehr zu den Adressen passt.
+ *
+ * Die CA bleibt dieselbe, solange sie gilt: Sie ist es, die auf den Geräten
+ * installiert ist. Nur eine, die in 60 Tagen abläuft, wird ersetzt. Das
+ * Server-Zertifikat dagegen wird neu ausgestellt, sobald sich eine Adresse
+ * ändert (neue IP vom Router) — das merkt kein Gerät.
+ *
+ * Geteilt vom Home-Assistant-Add-on (start.mjs) und von `serve.mjs --own-ca`.
+ *
+ * @param {string} dir
+ * @param {string[]} addresses
+ * @returns {{ cert: string, key: string, ca: string, names: string[], ips: string[] }} Pfade und was im Zertifikat steht
+ */
+export function ensureOwnCertificate(dir, addresses) {
+  mkdirSync(dir, { recursive: true });
+  const all = [...new Set(addresses.map((a) => String(a).trim()).filter(Boolean))];
+  const names = all.filter((a) => !isIp(a));
+  const ips = all.filter(isIp);
+
+  const ca = { cert: join(dir, 'ca-cert.pem'), key: join(dir, 'ca-key.pem') };
+  let caRenewed = false;
+  if (!existsSync(ca.key) || !validFor(ca.cert, 60)) {
+    const fresh = createCA();
+    writeFileSync(ca.key, fresh.key, { mode: 0o600 });
+    writeFileSync(ca.cert, fresh.cert);
+    caRenewed = true;
+  }
+
+  const own = { cert: join(dir, 'server-cert.pem'), key: join(dir, 'server-key.pem'), meta: join(dir, 'server-cert.json') };
+  const wanted = JSON.stringify({ names, ips });
+  let current = null;
+  try {
+    current = JSON.parse(readFileSync(own.meta, 'utf8'));
+  } catch {
+    /* noch keins */
+  }
+  if (caRenewed || !existsSync(own.key) || !validFor(own.cert, 30) || JSON.stringify(current) !== wanted) {
+    const fresh = issueServerCert(
+      { cert: readFileSync(ca.cert, 'utf8'), key: readFileSync(ca.key, 'utf8') },
+      { dnsNames: names, ips },
+    );
+    writeFileSync(own.key, fresh.key, { mode: 0o600 });
+    writeFileSync(own.cert, fresh.cert);
+    writeFileSync(own.meta, wanted + '\n');
+  }
+  return { cert: own.cert, key: own.key, ca: ca.cert, names, ips };
 }

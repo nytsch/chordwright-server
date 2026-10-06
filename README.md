@@ -114,8 +114,21 @@ wrote it.
 | `--backup-keep` | `14` | how many automatic snapshots are kept |
 | `--ready-json` | off | once listening, print one line `{"ready":true,"url","port","dir"}` instead of the banner |
 | `--exit-with-stdin` | off | exit when stdin closes — the program that started the server is gone |
+| `--own-ca` | none | a folder: https with a certificate authority of its own kept there (as the add-on does), the CA at `GET /ca.crt` |
+| `--hostnames` | none | extra names or addresses for that certificate, comma-separated |
+| `--loopback-port` | none | also plain http on `127.0.0.1` at this port (`0` = any) — for the program that started the server |
 
 `--port 0` lets the system pick a free port; `--ready-json` says which.
+
+Shared in a network the way the desktop app does it — https outside under
+this machine's names (`<name>.local`, its IPv4 addresses), its own CA, and http
+on loopback for the app's own window, which cannot be made to trust that CA:
+
+```sh
+chordwright-server --dir ~/Songs --host 0.0.0.0 --port 4174 --token $(openssl rand -hex 16) \
+  --own-ca ~/.chordwright-ca --loopback-port 0 --ready-json
+# {"ready":true,"url":"http://127.0.0.1:52011",…,"lan":{"port":4174,"urls":["https://studio.local:4174",…],"ca":true}}
+```
 
 Binding to anything but loopback without a token is **refused**, not warned
 about: an open port in a venue's wifi puts every song within reach of anyone on
