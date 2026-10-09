@@ -5,7 +5,8 @@ ChordPro charts. Point the app at it and your songs stop being rows in a
 browser's storage and become `.chordpro` files in a folder — files you can open,
 grep, diff, version and sync — shared by every device that connects.
 
-- **Zero dependencies.** `node:http`, `node:fs`, `node:crypto`. Nothing to install.
+- **One small program.** Rust, one static file of about 3 MB, nothing to install
+  next to it. The Chordwright desktop app runs the very same server inside itself.
 - **Real files.** One `.chordpro` file per song; everything else pretty-printed JSON.
 - **Live.** Edit a song in any editor and an open app updates while you look.
 - **Safe for more than one device.** Every record has a revision; a write based
@@ -16,10 +17,13 @@ grep, diff, version and sync — shared by every device that connects.
 
 Pick one.
 
-**Node** (20 or newer):
+**The program** — download `chordwright-server-<target>` for your system from
+the [latest release](https://github.com/nytsch/chordwright-server/releases/latest),
+or build it with [Rust](https://rustup.rs):
 
 ```sh
-node chordwright-data/server/serve.mjs --dir ./data
+chordwright-server --dir ./data
+cargo run --release -- --dir ./data     # from this repository
 ```
 
 **Docker Compose** — `compose.yaml` in this repository, songs in `./data`:
@@ -29,7 +33,8 @@ docker compose up -d --build
 docker compose logs      # the token, and where the CA certificate is
 ```
 
-Same image and start script as the Home Assistant add-on, so it speaks https
+Same image as the Home Assistant add-on (the release's Linux program for
+`BUILD_VERSION` in `compose.yaml`), so it speaks https
 with its own small certificate authority. Install `./data/chordwright-ca.crt`
 once (macOS: Keychain → *Always Trust*), then connect the app to
 `https://localhost:4174`. Plain http would not do: Safari lets no https page
@@ -43,25 +48,25 @@ Then in the app: **Einstellungen → Datenquelle**, enter the address (and the
 token, if you set one), *Testen*, *Verbinden*. The app reloads and now reads and
 writes that folder.
 
-## As a single executable
+## One server, three places
 
-Every release carries the server as one file per platform, Node included —
-what the Chordwright desktop app ships to keep a library in a folder on the same
-machine. Named by Rust target, the way Tauri looks for a bundled program:
-`chordwright-server-aarch64-apple-darwin`, `…-x86_64-apple-darwin`,
-`…-universal-apple-darwin`, `…-x86_64-pc-windows-msvc.exe`,
-`…-x86_64-unknown-linux-gnu`. Same flags as above.
+- **The program** (`src/main.rs`): every release carries it per platform, named
+  by Rust target — `chordwright-server-x86_64-unknown-linux-musl`,
+  `…-aarch64-unknown-linux-musl` (static), `…-aarch64-apple-darwin`,
+  `…-x86_64-apple-darwin`, `…-x86_64-pc-windows-msvc.exe`.
+- **The Home Assistant add-on**: the same program, `--addon`
+  (`src/addon.rs`), with a web UI behind *Open Web UI* that shows a QR code to
+  connect a device (`src/panel.rs`). Its image fetches the static Linux file of the release that
+  matches the add-on's version and checks it against `SHA256SUMS`; nothing is
+  compiled on the Home Assistant machine. So a release comes first (tag →
+  `release.yml`), the version bump on `main` second.
+- **The Chordwright desktop app**, for a library kept as a folder on that
+  machine: it depends on this crate (pinned to a commit) and runs the server
+  in its own process — `Server::start` in `src/lib.rs`.
 
-Built as a Node single executable application, not with Bun: Bun's `fs.watch`
-reports a save-by-rename under the old name only, and that is how this server
-and most editors save — the app would never hear of the edit. To build one for
-this machine, or another target (macOS targets on a Mac only):
-
-```sh
-npm run build:bin                                   # dist/chordwright-server-<target>
-node scripts/build-binary.mjs --target x86_64-pc-windows-msvc
-CHORDWRIGHT_SERVER_BIN=$PWD/dist/chordwright-server-<target> npm test
-```
+Up to 1.7.0 this was a Node server. The files on disk, the routes, the answers
+and the add-on's certificate authority are the same: a folder, a token and an
+installed CA carry over as they are.
 
 ## What the folder looks like
 
@@ -113,6 +118,7 @@ wrote it.
 | `--backup-every` | `24` | hours between automatic snapshots, taken only when something changed; `0` = on request only |
 | `--backup-keep` | `14` | how many automatic snapshots are kept |
 | `--ready-json` | off | once listening, print one line `{"ready":true,"url","port","dir"}` instead of the banner |
+| `--addon` | off | start as the Home Assistant add-on: options from `/data/options.json`, see `src/addon.rs` |
 | `--exit-with-stdin` | off | exit when stdin closes — the program that started the server is gone |
 | `--own-ca` | none | a folder: https with a certificate authority of its own kept there (as the add-on does), the CA at `GET /ca.crt` |
 | `--hostnames` | none | extra names or addresses for that certificate, comma-separated |
@@ -135,7 +141,7 @@ about: an open port in a venue's wifi puts every song within reach of anyone on
 it, and a warning scrolls past. For a phone on the same network:
 
 ```sh
-node chordwright-data/server/serve.mjs --dir ./data --host 0.0.0.0 --token $(openssl rand -hex 16)
+chordwright-server --dir ./data --host 0.0.0.0 --token $(openssl rand -hex 16)
 ```
 
 **https:** the app is usually opened over `https://`, and a browser will not let
@@ -266,22 +272,28 @@ The client id is `X-Chordwright-Client`, as for writes.
   sees half of one.
 - Changes to one record are done one after the other, so a conditional write's
   compare and write cannot interleave with another's.
-- `songs/_documents.json` is shared by every song, so changes to it are queued
-  too — the first app to connect writes the whole library at once.
+- `songs/_documents.json` is shared by every song, so changes to it go under
+  the same lock — the first app to connect writes the whole library at once.
 - The watcher watches the three directories (`library/`, `library/songs/`,
-  `user/`), not the tree recursively: on Linux, Node implements a recursive
-  watch per file, and a file replaced by a rename — this server's writes, and
-  most editors' saves — silently drops out of it.
+  `user/`), not the tree recursively: the layout is fixed, and a directory
+  watch sees every entry in it however it was written, also a file replaced by
+  a rename — this server's writes, and most editors' saves.
+- On SIGTERM (Home Assistant, docker) the change journal is written before the
+  program ends.
 
 ## Tests
 
 ```sh
-npm test
+cargo test        # from the inside: store, backups, journal, stage, certificates
+npm test          # from the outside: builds the program, then test/server.test.mjs against it
 ```
 
-`node:test`, no dependencies: the store, conditional writes and their races,
-the HTTP API over http and https, live file events, and the add-on's start
-script and certificate.
+`npm test` is the HTTP API over http and https, conditional writes and their
+races, live file events, the way the desktop app starts the server, and the
+add-on's start (`--addon`) with its token and certificate authority. It ran
+against the Node server up to 1.7.0 and runs unchanged against this one; CI runs
+it against every release file on its own platform (`binary.yml`). openssl is
+needed for the https cases.
 
 ## License
 

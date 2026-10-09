@@ -19,6 +19,17 @@ Deine Chordwright-Bibliothek liegt dann auf dem Home-Assistant-Rechner statt im 
 
 ## Die App verbinden
 
+### Per QR-Code
+
+Beim Add-on oben **Web-UI öffnen** (oder in der Seitenleiste **Chordwright**, wenn du *In Seitenleiste anzeigen* einschaltest). Dort stehen zwei QR-Codes:
+
+1. **Zertifikat** — nur bei der eigenen Zertifizierungsstelle, einmal pro Gerät (siehe [Das Zertifikat](#das-zertifikat)). Mit der Kamera-App scannen und öffnen.
+2. **Verbinden** — mit der Kamera-App scannen: Chordwright öffnet sich mit Adresse und Token schon eingetragen. Oder in Chordwright unter **Einstellungen → Datenquelle → Server hinzufügen** auf **QR-Code scannen** tippen.
+
+Dann noch **Verbinden**. Hat der Rechner mehrere Adressen, wählst du oben auf der Seite, für welche der Code gilt. Bist du gerade auf dem Gerät, das du verbinden willst, tipp auf **hier öffnen**.
+
+### Von Hand
+
 In Chordwright: **Einstellungen → Datenquelle**
 
 - **Adresse:** eine der Adressen aus dem Protokoll, z. B. `https://192.168.1.20:4174`, ohne `/api` am Ende.

@@ -7,14 +7,35 @@ on:
 jobs:
   test:
     runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        node: [20, 22]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: ${{ matrix.node }}
+          node-version: 22
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+          targets: x86_64-unknown-linux-musl
+      - run: cargo fmt --check
+      - run: cargo clippy --all-targets -- -D warnings
+      - run: cargo test
+      # Die Tests von außen, über HTTP, gegen das Programm (scripts/test.mjs).
       - run: npm test
-      - name: Add-on image builds
-        run: docker build -t chordwright-data chordwright-data
+
+      # Das Dockerfile des Add-ons holt die Programmdatei aus dem Release. Hier
+      # steht stattdessen ein nachgestelltes Release bereit — aus diesem Stand
+      # gebaut —, damit das echte Dockerfile vor dem Release geprüft ist.
+      - name: Add-on-Image aus einem nachgestellten Release
+        run: |
+          set -eu
+          sudo apt-get install -y -q musl-tools > /dev/null
+          cargo build --release --target x86_64-unknown-linux-musl
+          version=$(sed -n 's/^version: *"\{0,1\}\([^"]*\)"\{0,1\}$/\1/p' chordwright-data/config.yaml)
+          mkdir -p "mirror/v$version"
+          cp target/x86_64-unknown-linux-musl/release/chordwright-server "mirror/v$version/chordwright-server-x86_64-unknown-linux-musl"
+          (cd "mirror/v$version" && tar -czf chordwright-server-x86_64-unknown-linux-musl.tar.gz chordwright-server-x86_64-unknown-linux-musl && sha256sum *.tar.gz > SHA256SUMS)
+          (cd mirror && python3 -m http.server 8765 --bind 127.0.0.1 > /dev/null 2>&1 &)
+          sleep 1
+          docker build --network host --build-arg BUILD_VERSION="$version" \
+            --build-arg RELEASES=http://127.0.0.1:8765 -t chordwright-data chordwright-data
+          .github/check-image.sh chordwright-data

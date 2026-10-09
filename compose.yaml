@@ -3,7 +3,8 @@
 #   docker compose up -d --build
 #   docker compose logs          → Token und die Adresse der CA
 #
-# Dasselbe Image und Startskript wie das Home-Assistant-Add-on: https mit
+# Dasselbe Image wie das Home-Assistant-Add-on — die Programmdatei aus dem
+# Release unter BUILD_VERSION —, und wie dort: https mit
 # einer eigenen kleinen Zertifizierungsstelle. Die installierst du einmal
 # (./data/chordwright-ca.crt → Schlüsselbund → „Immer vertrauen"), danach
 # verbindet sich die App mit https://localhost:4174 — auch in Safari, das
@@ -17,7 +18,12 @@
 # unter CHORDWRIGHT_HOSTNAMES eintragen, damit sie im Zertifikat stehen.
 services:
   chordwright-data:
-    build: ./chordwright-data
+    build:
+      context: ./chordwright-data
+      args:
+        BUILD_VERSION: "2.0.0"   # wie version in chordwright-data/config.yaml
+        BUILD_ARCH: amd64        # auf einem Raspberry Pi oder Mac mit Apple-Chip: aarch64 …
+        BUILD_FROM: ghcr.io/home-assistant/amd64-base:3.20   # … und hier aarch64-base
     environment:
       ADDON_DATA_DIR: /state
       ADDON_SHARE_DIR: /share

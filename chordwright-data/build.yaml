@@ -1,0 +1,5 @@
+# Das Image, mit dem das Dockerfile die Programmdatei lädt (BUILD_FROM), je
+# Architektur — Home Assistants eigenes, von ghcr.io statt Docker Hub.
+build_from:
+  aarch64: ghcr.io/home-assistant/aarch64-base:3.20
+  amd64: ghcr.io/home-assistant/amd64-base:3.20

@@ -8,8 +8,10 @@
 # Erst testen, dann veröffentlichen: ein Tag auf rotem Code wird kein Release.
 # Ein zweiter Lauf auf denselben Tag (Re-run) aktualisiert nur den Text.
 #
-# Dazu die Programmdateien des Servers für die Desktop-App (binary.yml):
-# chordwright-server-<rust-target>, als .tar.gz bzw. .zip, mit SHA256SUMS.
+# Dazu die Programmdateien des Servers (binary.yml): chordwright-server-<rust-target>,
+# als .tar.gz bzw. .zip, mit SHA256SUMS. Die beiden für Linux (musl) holt das
+# Add-on-Image; deshalb erst taggen und dieses Release abwarten, dann die
+# Version in config.yaml auf main bringen (siehe chordwright-data/Dockerfile).
 
 name: release
 
@@ -21,26 +23,31 @@ permissions:
   contents: write
 
 jobs:
+  # Erst die Programmdateien, gebaut und getestet auf jeder Plattform — ein Tag
+  # auf rotem Code wird kein Release.
+  binaries:
+    uses: ./.github/workflows/binary.yml
+
   release:
+    needs: binaries
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 22
-      - run: npm test
-
-      - name: Tag, config.yaml und package.json nennen dieselbe Version
+      - name: Tag, config.yaml, Cargo.toml, package.json und compose.yaml nennen dieselbe Version
         id: version
         run: |
           tag="${GITHUB_REF_NAME#v}"
           addon=$(sed -n 's/^version: *"\{0,1\}\([^"]*\)"\{0,1\}$/\1/p' chordwright-data/config.yaml)
           pkg=$(node -p "require('./package.json').version")
-          echo "Tag $tag · config.yaml $addon · package.json $pkg"
-          if [ "$tag" != "$addon" ] || [ "$tag" != "$pkg" ]; then
-            echo "::error::Tag $GITHUB_REF_NAME passt nicht zu config.yaml ($addon) / package.json ($pkg)."
-            exit 1
-          fi
+          crate=$(sed -n 's/^version = "\(.*\)"$/\1/p' Cargo.toml | head -1)
+          compose=$(sed -n 's/^ *BUILD_VERSION: *"\(.*\)".*$/\1/p' compose.yaml)
+          echo "Tag $tag · config.yaml $addon · Cargo.toml $crate · package.json $pkg · compose.yaml $compose"
+          for v in "$addon" "$crate" "$pkg" "$compose"; do
+            if [ "$tag" != "$v" ]; then
+              echo "::error::Tag $GITHUB_REF_NAME passt nicht zu config.yaml ($addon) / Cargo.toml ($crate) / package.json ($pkg) / compose.yaml ($compose)."
+              exit 1
+            fi
+          done
           echo "version=$tag" >> "$GITHUB_OUTPUT"
 
       - name: Abschnitt aus dem Changelog
@@ -65,12 +72,6 @@ jobs:
           else
             gh release create "$GITHUB_REF_NAME" --title "$GITHUB_REF_NAME" --notes-file notes.md --verify-tag
           fi
-
-  # Der Server als Programmdatei je Plattform, für die Desktop-App, die ihn
-  # mitliefert. Gebaut und getestet wie bei jedem Push (binary.yml).
-  binaries:
-    needs: release
-    uses: ./.github/workflows/binary.yml
 
   attach:
     needs: [release, binaries]
@@ -97,3 +98,22 @@ jobs:
           sha256sum *.tar.gz *.zip > SHA256SUMS
           cat SHA256SUMS
           gh release upload "$GITHUB_REF_NAME" *.tar.gz *.zip SHA256SUMS --clobber --repo "$GITHUB_REPOSITORY"
+
+  # Das Add-on-Image so, wie Home Assistant es baut: mit dem echten Dockerfile
+  # gegen dieses Release, auf beiden Architekturen.
+  image:
+    needs: attach
+    strategy:
+      matrix:
+        include:
+          - { os: ubuntu-latest, arch: amd64 }
+          - { os: ubuntu-24.04-arm, arch: aarch64 }
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Image bauen und starten
+        run: |
+          docker build --build-arg BUILD_ARCH=${{ matrix.arch }} --build-arg BUILD_VERSION="${GITHUB_REF_NAME#v}" \
+            --build-arg BUILD_FROM=ghcr.io/home-assistant/${{ matrix.arch }}-base:3.20 \
+            -t chordwright-data chordwright-data
+          .github/check-image.sh chordwright-data

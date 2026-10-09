@@ -1,5 +1,16 @@
 # Changelog
 
+## 2.0.0
+
+- Der Server ist neu geschrieben, in Rust statt Node: eine einzige Programmdatei von etwa 3 MB. Das Image des Add-ons schrumpft von rund 150 MB auf unter 5 MB und startet schneller; es kommt ohne Docker Hub aus (Home Assistants Basis-Image von ghcr.io zum Laden, das Image selbst ist nur die Programmdatei). Ordner, Token, Zertifikate und die einmal installierte CA bleiben, wie sie sind — für die App ändert sich nichts.
+- Das Add-on baut nichts mehr auf dem Home-Assistant-Rechner: Es holt die fertige Programmdatei aus dem Release dieser Version und prüft sie gegen deren Prüfsumme.
+- Derselbe Server läuft jetzt auch in der Chordwright-Desktop-App selbst (Bibliothek als Ordner auf dem Rechner); es gibt ihn nur noch einmal.
+- Das Add-on hat eine Web-UI (*Web-UI öffnen*, auf Wunsch in der Seitenleiste): ein QR-Code, mit dem sich ein Gerät verbindet — mit der Kamera-App gescannt öffnet er Chordwright mit Adresse und Token, und die App kann ihn auch selbst scannen. Bei der eigenen Zertifizierungsstelle steht davor ein zweiter Code, der das Zertifikat lädt. Hat der Rechner mehrere Adressen, wählt man, für welche der Code gilt.
+- Ist der Port unter *Netzwerk* umgestellt, nennen Protokoll und QR-Code jetzt diesen statt 4174.
+- Mit eigenen Zertifikaten (Let's Encrypt, DuckDNS) zeigt das Protokoll die Namen aus dem Zertifikat als Adresse, ohne https die IP-Adressen des Rechners.
+- Beim Beenden schreibt der Server das Änderungsprotokoll noch fertig.
+- Von Hand: `chordwright-server` aus dem Release oder `cargo run --release -- --dir ./data`. Die Programmdateien für Linux sind jetzt statisch gebaut (`…-unknown-linux-musl`, auch für ARM).
+
 ## 1.7.0
 
 - Der Server kann sich selbst eine kleine Zertifizierungsstelle anlegen (`--own-ca <ordner>`), wie es das Add-on tut, und spricht damit https unter den Namen und Adressen des Rechners. Für die Desktop-App, die eine Bibliothek im WLAN freigibt.
