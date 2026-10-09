@@ -22,7 +22,8 @@ services:
       context: ./chordwright-data
       args:
         BUILD_VERSION: "2.0.0"   # wie version in chordwright-data/config.yaml
-        BUILD_ARCH: amd64        # auf einem Raspberry Pi oder Mac mit Apple-Chip: aarch64
+        BUILD_ARCH: amd64        # auf einem Raspberry Pi oder Mac mit Apple-Chip: aarch64 …
+        BUILD_FROM: ghcr.io/home-assistant/amd64-base:3.20   # … und hier aarch64-base
     environment:
       ADDON_DATA_DIR: /state
       ADDON_SHARE_DIR: /share

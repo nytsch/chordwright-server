@@ -7,7 +7,12 @@
 # Deshalb erst das Release (Tag → release.yml hängt die Dateien an), dann die
 # Version in config.yaml auf main heben: sonst findet Home Assistant die Datei
 # noch nicht.
-FROM alpine:3.20 AS fetch
+#
+# Nichts von Docker Hub: Geladen wird mit Home Assistants eigenem Basis-Image
+# (ghcr.io, je Architektur aus build.yaml, BUILD_FROM), und das Image selbst ist
+# nur die statische Programmdatei — sie braucht kein Betriebssystem darunter.
+ARG BUILD_FROM=ghcr.io/home-assistant/amd64-base:3.20
+FROM ${BUILD_FROM} AS fetch
 ARG BUILD_ARCH=amd64
 ARG BUILD_VERSION
 ARG RELEASES=https://github.com/nytsch/chordwright-server/releases/download
@@ -25,6 +30,6 @@ RUN set -eu; \
     tar -xzf "$archive"; \
     mv "chordwright-server-$target" /chordwright-server
 
-FROM alpine:3.20
-COPY --from=fetch /chordwright-server /usr/local/bin/chordwright-server
-CMD ["chordwright-server", "--addon"]
+FROM scratch
+COPY --from=fetch /chordwright-server /chordwright-server
+CMD ["/chordwright-server", "--addon"]
