@@ -19,7 +19,9 @@ use std::net::{TcpStream, ToSocketAddrs};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use chordwright_server::{ensure_own_certificate, Options};
+use chordwright_server::{certificate_names, ensure_own_certificate, Options};
+
+use crate::panel::{address_url, order_addresses, Panel};
 use serde_json::Value;
 
 /// Namen, die jedes Zertifikat trägt — die üblichen Adressen eines Home Assistant.
@@ -117,10 +119,9 @@ fn unchunk(mut input: &[u8]) -> Option<Vec<u8>> {
     }
 }
 
-/// Die IP-Adressen des Home-Assistant-Rechners. Das Add-on selbst läuft in
-/// einem Container und sieht sie nicht; der Supervisor kennt sie. Scheitert
-/// die Frage, geht es ohne weiter — dann tragen nur die Namen.
-fn host_addresses() -> Vec<String> {
+/// Eine Frage an den Supervisor: sein `data`. Scheitert sie, None — dann
+/// geht es ohne.
+fn supervisor(path: &str) -> Option<Value> {
     let token = std::env::var("SUPERVISOR_TOKEN")
         .ok()
         .filter(|t| !t.is_empty());
@@ -128,14 +129,22 @@ fn host_addresses() -> Vec<String> {
         .ok()
         .filter(|u| !u.is_empty());
     if token.is_none() && url.is_none() {
-        return Vec::new();
+        return None;
     }
     let base = url.unwrap_or_else(|| "http://supervisor".into());
-    let Some(body) = http_get_json(&format!("{base}/network/info"), token.as_deref()) else {
+    let mut body = http_get_json(&format!("{base}{path}"), token.as_deref())?;
+    Some(body["data"].take())
+}
+
+/// Die IP-Adressen des Home-Assistant-Rechners. Das Add-on selbst läuft in
+/// einem Container und sieht sie nicht; der Supervisor kennt sie. Scheitert
+/// die Frage, geht es ohne weiter — dann tragen nur die Namen.
+fn host_addresses() -> Vec<String> {
+    let Some(info) = supervisor("/network/info") else {
         return Vec::new();
     };
     let mut ips = Vec::new();
-    for iface in body["data"]["interfaces"].as_array().into_iter().flatten() {
+    for iface in info["interfaces"].as_array().into_iter().flatten() {
         for family in ["ipv4", "ipv6"] {
             for address in iface[family]["address"].as_array().into_iter().flatten() {
                 let Some(text) = address.as_str() else {
@@ -152,6 +161,18 @@ fn host_addresses() -> Vec<String> {
     ips
 }
 
+/// Der Port, unter dem man das Add-on von außen erreicht: unter „Netzwerk“
+/// umstellbar, der Container hört trotzdem auf `port`.
+fn host_port(port: u16) -> String {
+    supervisor("/addons/self/info")
+        .and_then(|info| match &info["network"][format!("{port}/tcp")] {
+            Value::Number(n) => Some(n.to_string()),
+            Value::String(s) if !s.is_empty() => Some(s.clone()),
+            _ => None,
+        })
+        .unwrap_or_else(|| port.to_string())
+}
+
 fn strings(value: &Value) -> Vec<String> {
     value
         .as_array()
@@ -162,8 +183,9 @@ fn strings(value: &Value) -> Vec<String> {
         .collect()
 }
 
-/// Die Optionen des Servers, und vorher die Übersicht im Log.
-pub fn options() -> Result<Options, String> {
+/// Die Optionen des Servers und, unter Home Assistant, was die Web-UI zeigt
+/// (mit ihrem Port); vorher die Übersicht im Log.
+pub fn options() -> Result<(Options, Option<(u16, Panel)>), String> {
     let data = PathBuf::from(env_or("ADDON_DATA_DIR", "/data"));
     let share = PathBuf::from(env_or("ADDON_SHARE_DIR", "/share"));
     let ssl = PathBuf::from(env_or("ADDON_SSL_DIR", "/ssl"));
@@ -179,6 +201,8 @@ pub fn options() -> Result<Options, String> {
         .to_string();
     let dir = share.join(&folder);
     let (token, generated) = resolve_token(options["token"].as_str(), &data)?;
+    let ips = host_addresses();
+    let outside = host_port(port);
 
     // (Zertifikat, Schlüssel, eigene CA mit Namen und IPs)
     let mut tls: Option<(PathBuf, PathBuf, Option<chordwright_server::Own>)> = None;
@@ -192,7 +216,7 @@ pub fn options() -> Result<Options, String> {
             // den Optionen (Home Assistant) oder CHORDWRIGHT_HOSTNAMES (docker compose).
             let mut addresses: Vec<String> = DEFAULT_NAMES.iter().map(|n| n.to_string()).collect();
             addresses.push("127.0.0.1".into());
-            addresses.extend(host_addresses());
+            addresses.extend(ips.iter().cloned());
             addresses.extend(strings(&options["hostnames"]));
             addresses.extend(
                 env_or("CHORDWRIGHT_HOSTNAMES", "")
@@ -215,21 +239,32 @@ pub fn options() -> Result<Options, String> {
     // Unter Home Assistant gibt es den Supervisor-Token; sonst (docker compose,
     // von Hand) ist es der eigene Rechner, und Samba gibt es nicht.
     let in_home_assistant = std::env::var("SUPERVISOR_TOKEN").is_ok_and(|t| !t.is_empty());
-    let addresses: Vec<String> = match own {
-        Some(own) => own
+    let hostnames: Vec<String> = strings(&options["hostnames"])
+        .into_iter()
+        .map(|h| h.trim().to_string())
+        .filter(|h| !h.is_empty())
+        .collect();
+    let local = if in_home_assistant {
+        "homeassistant.local"
+    } else {
+        "localhost"
+    }
+    .to_string();
+    // Wo man ihn erreicht: mit eigener CA alles, was im Zertifikat steht; mit
+    // einem fremden die Namen darin; ohne https die Adressen des Rechners.
+    let mut reachable: Vec<String> = match &tls {
+        Some((_, _, Some(own))) => own
             .ips
             .iter()
             .filter(|ip| *ip != "127.0.0.1")
             .cloned()
-            .chain([if in_home_assistant {
-                "homeassistant.local"
-            } else {
-                "localhost"
-            }
-            .to_string()])
+            .chain([local])
             .collect(),
-        None => Vec::new(),
+        Some((cert, _, None)) => certificate_names(cert),
+        None => ips.iter().cloned().chain([local]).collect(),
     };
+    reachable.extend(hostnames);
+    let addresses = order_addresses(&reachable);
     let rule = "-".repeat(60);
     println!("{rule}");
     println!("Chordwright Data");
@@ -240,15 +275,10 @@ pub fn options() -> Result<Options, String> {
     };
     println!("  Ordner   {}{samba}", dir.display());
     if addresses.is_empty() {
-        println!("  Adresse  {scheme}://<deine-Home-Assistant-Adresse>:{port}");
+        println!("  Adresse  {scheme}://<deine-Home-Assistant-Adresse>:{outside}");
     }
     for a in &addresses {
-        let host = if a.contains(':') {
-            format!("[{a}]")
-        } else {
-            a.clone()
-        };
-        println!("  Adresse  {scheme}://{host}:{port}");
+        println!("  Adresse  {}", address_url(scheme, a, &outside));
     }
     println!(
         "  Token    {token}{}",
@@ -265,8 +295,11 @@ pub fn options() -> Result<Options, String> {
         } else {
             "oder die Datei chordwright-ca.crt im Datenordner".to_string()
         };
-        let first = addresses.first().map(String::as_str).unwrap_or("<Adresse>");
-        println!("    {scheme}://{first}:{port}/ca.crt   ({ca_file})");
+        let first = match addresses.first() {
+            Some(a) => address_url(scheme, a, &outside),
+            None => format!("{scheme}://<Adresse>:{outside}"),
+        };
+        println!("    {first}/ca.crt   ({ca_file})");
         println!(
             "  Gilt für: {}",
             own.names
@@ -281,7 +314,33 @@ pub fn options() -> Result<Options, String> {
         println!("  Ohne ssl erreicht die App auf einer https-Seite den Server nicht.");
     }
     println!("In der App: Einstellungen → Datenquelle → Adresse (ohne /api) und Token eintragen.");
+    if in_home_assistant {
+        println!("Oder per QR-Code: oben beim Add-on „Web-UI öffnen“.");
+    }
     println!("{rule}");
+
+    // Die Web-UI mit dem QR-Code. Unter Home Assistant immer; sonst (Tests) nur,
+    // wenn jemand einen Port dafür nennt. Wie ingress_port in config.yaml.
+    let ingress = std::env::var("ADDON_INGRESS_PORT")
+        .ok()
+        .filter(|p| !p.is_empty());
+    let panel = if in_home_assistant || ingress.is_some() {
+        let ingress_port: u16 = ingress
+            .as_deref()
+            .unwrap_or("8099")
+            .parse()
+            .map_err(|_| "ADDON_INGRESS_PORT is no port".to_string())?;
+        let panel = Panel {
+            addresses: addresses.clone(),
+            scheme: scheme.to_string(),
+            port: outside.clone(),
+            token: token.clone(),
+            own_ca: own.is_some(),
+        };
+        Some((ingress_port, panel))
+    } else {
+        None
+    };
 
     let defaults = Options::default();
     // Ältere Optionen kennen die beiden nicht; dann gilt der Standard des Servers.
@@ -296,7 +355,7 @@ pub fn options() -> Result<Options, String> {
         Some((cert, key, _)) => (Some(cert), Some(key)),
         None => (None, None),
     };
-    Ok(Options {
+    let options = Options {
         dir,
         host: "0.0.0.0".into(),
         port,
@@ -307,5 +366,6 @@ pub fn options() -> Result<Options, String> {
         backup_every: every.unwrap_or(defaults.backup_every),
         backup_keep: keep.map(|k| k as usize).unwrap_or(defaults.backup_keep),
         ..defaults
-    })
+    };
+    Ok((options, panel))
 }

@@ -13,7 +13,7 @@
 mod backups;
 mod certs;
 
-pub use certs::{ensure_own_certificate, Own};
+pub use certs::{certificate_names, ensure_own_certificate, Own};
 mod http;
 mod journal;
 mod stage;

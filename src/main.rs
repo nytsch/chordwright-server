@@ -1,12 +1,13 @@
 //! chordwright serve, as a program:
 //!
 //!   chordwright-server --dir ./data --port 4174
-//!   chordwright-server --addon            the Home Assistant add-on (addon.rs)
+//!   chordwright-server --addon            the Home Assistant add-on (addon.rs, panel.rs)
 //!
 //! The desktop app does not start this; it runs the library in its own
 //! process (the library crate).
 
 mod addon;
+mod panel;
 
 use std::io::Read;
 use std::path::PathBuf;
@@ -84,10 +85,16 @@ fn main() {
     let argv: Vec<String> = std::env::args().skip(1).collect();
     let mut args = parse_args(&argv);
     if args.addon {
-        args.options = addon::options().unwrap_or_else(|err| {
+        let (options, panel) = addon::options().unwrap_or_else(|err| {
             eprintln!("{err}");
             std::process::exit(1);
         });
+        args.options = options;
+        if let Some((port, panel)) = panel {
+            if let Err(err) = panel::start(port, panel) {
+                eprintln!("Web-UI startet nicht: {err}");
+            }
+        }
     }
     let o = args.options.clone();
     let server = match Server::start(args.options) {

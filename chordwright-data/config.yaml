@@ -9,10 +9,15 @@ arch:
   - aarch64
   - amd64
 startup: application
-# Nur für eine Frage an den Supervisor: die IP-Adressen des Rechners, damit sie
-# im Zertifikat stehen.
+# Für zwei Fragen an den Supervisor: die IP-Adressen des Rechners, damit sie
+# im Zertifikat stehen, und unter welchem Port das Add-on erreichbar ist.
 hassio_api: true
 boot: auto
+# „Web-UI öffnen“: eine Seite mit dem QR-Code, mit dem sich ein Gerät verbindet.
+ingress: true
+ingress_port: 8099
+panel_icon: mdi:qrcode
+panel_title: Chordwright
 ports:
   4174/tcp: 4174
 ports_description:

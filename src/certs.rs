@@ -231,6 +231,63 @@ fn cert_info(der: &[u8]) -> Option<CertInfo> {
     })
 }
 
+/// The dNSName entries of the subjectAltName extension.
+fn san_dns_names(der: &[u8]) -> Option<Vec<String>> {
+    let (_, cert, _) = read_tlv(der, 0)?;
+    let (_, tbs, tbs_end) = read_tlv(der, cert)?;
+    let mut pos = tbs;
+    while pos < tbs_end {
+        let (tag, start, end) = read_tlv(der, pos)?;
+        pos = end;
+        if tag != 0xa3 {
+            continue;
+        }
+        let (_, extensions, extensions_end) = read_tlv(der, start)?;
+        let mut at = extensions;
+        while at < extensions_end {
+            let (_, ext, ext_end) = read_tlv(der, at)?;
+            at = ext_end;
+            let (_, id, id_end) = read_tlv(der, ext)?;
+            if der[id..id_end] != [0x55, 0x1d, 0x11] {
+                continue;
+            }
+            // critical (optional), then the value as an OCTET STRING
+            let (mut tag, mut value, mut value_end) = read_tlv(der, id_end)?;
+            if tag == 0x01 {
+                (tag, value, value_end) = read_tlv(der, value_end)?;
+            }
+            if tag != 0x04 || value >= value_end {
+                return None;
+            }
+            let (_, names, names_end) = read_tlv(der, value)?;
+            let mut out = Vec::new();
+            let mut n = names;
+            while n < names_end {
+                let (kind, s, e) = read_tlv(der, n)?;
+                if kind == 0x82 {
+                    out.push(String::from_utf8_lossy(&der[s..e]).into_owned());
+                }
+                n = e;
+            }
+            return Some(out);
+        }
+    }
+    Some(Vec::new())
+}
+
+/// Die Namen in einem Zertifikat (Let's Encrypt, DuckDNS) — ohne Platzhalter
+/// wie `*.example.org`. Nichts, wenn es nicht lesbar ist.
+pub fn certificate_names(path: &Path) -> Vec<String> {
+    std::fs::read_to_string(path)
+        .ok()
+        .and_then(|t| pem_block(&t, "CERTIFICATE"))
+        .and_then(|der| san_dns_names(&der))
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|n| !n.contains('*'))
+        .collect()
+}
+
 fn read_cert(path: &Path) -> Option<CertInfo> {
     cert_info(&pem_block(
         &std::fs::read_to_string(path).ok()?,
@@ -526,6 +583,7 @@ mod tests {
         let server = read_cert(&own.cert).unwrap();
         assert_eq!(ca.subject, name(CA_NAME));
         assert_eq!(server.subject, name("chordwright"));
+        assert_eq!(certificate_names(&own.cert), ["localhost"]);
         assert!(server.not_after - now_ms() > 800 * DAY);
         let before = std::fs::read(&own.cert).unwrap();
         ensure_own_certificate(

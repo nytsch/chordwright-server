@@ -55,7 +55,8 @@ writes that folder.
   `…-aarch64-unknown-linux-musl` (static), `…-aarch64-apple-darwin`,
   `…-x86_64-apple-darwin`, `…-x86_64-pc-windows-msvc.exe`.
 - **The Home Assistant add-on**: the same program, `--addon`
-  (`src/addon.rs`). Its image fetches the static Linux file of the release that
+  (`src/addon.rs`), with a web UI behind *Open Web UI* that shows a QR code to
+  connect a device (`src/panel.rs`). Its image fetches the static Linux file of the release that
   matches the add-on's version and checks it against `SHA256SUMS`; nothing is
   compiled on the Home Assistant machine. So a release comes first (tag →
   `release.yml`), the version bump on `main` second.
