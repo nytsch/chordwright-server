@@ -68,7 +68,11 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           if gh release view "$GITHUB_REF_NAME" > /dev/null 2>&1; then
-            gh release edit "$GITHUB_REF_NAME" --title "$GITHUB_REF_NAME" --notes-file notes.md
+            # Auch einen Entwurf, den jemand in der Oberfläche angelegt hat: das
+            # Add-on-Image lädt die Dateien von hier, und an einem Entwurf sind
+            # sie für niemanden zu sehen.
+            gh release edit "$GITHUB_REF_NAME" --title "$GITHUB_REF_NAME" --notes-file notes.md \
+              --tag "$GITHUB_REF_NAME" --draft=false
           else
             gh release create "$GITHUB_REF_NAME" --title "$GITHUB_REF_NAME" --notes-file notes.md --verify-tag
           fi
