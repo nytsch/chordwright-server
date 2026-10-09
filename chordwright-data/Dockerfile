@@ -3,5 +3,5 @@
 FROM node:22-alpine
 WORKDIR /srv
 COPY server/ ./server/
-COPY start.mjs certs.mjs ./
+COPY start.mjs certs.mjs panel.mjs qr.mjs ./
 CMD ["node", "start.mjs"]

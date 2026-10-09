@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.8.0
+
+- Das Add-on hat eine Web-UI (*Web-UI öffnen*, auf Wunsch in der Seitenleiste): ein QR-Code, mit dem sich ein Gerät verbindet — mit der Kamera-App gescannt öffnet er Chordwright mit Adresse und Token, und die App kann ihn auch selbst scannen. Bei der eigenen Zertifizierungsstelle steht davor ein zweiter Code, der das Zertifikat lädt. Hat der Rechner mehrere Adressen, wählt man, für welche der Code gilt.
+- Ist der Port unter *Netzwerk* umgestellt, nennen Protokoll und QR-Code jetzt diesen statt 4174.
+- Mit eigenen Zertifikaten (Let's Encrypt, DuckDNS) zeigt das Protokoll die Namen aus dem Zertifikat als Adresse, ohne https die IP-Adressen des Rechners.
+- Am Server selbst und an der Programmdatei ändert sich nichts.
+
 ## 1.7.0
 
 - Der Server kann sich selbst eine kleine Zertifizierungsstelle anlegen (`--own-ca <ordner>`), wie es das Add-on tut, und spricht damit https unter den Namen und Adressen des Rechners. Für die Desktop-App, die eine Bibliothek im WLAN freigibt.

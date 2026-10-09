@@ -1017,9 +1017,13 @@ test('addon: the CA and the server certificate it issues are what browsers and o
 /** A stand-in for the Supervisor's /network/info. */
 async function fakeSupervisor(addresses) {
   const { createServer } = await import('node:http');
-  const state = { addresses };
+  const state = { addresses, network: undefined };
   const server = createServer((req, res) => {
     res.writeHead(200, { 'content-type': 'application/json' });
+    if (req.url === '/addons/self/info') {
+      res.end(JSON.stringify({ result: 'ok', data: { network: state.network } }));
+      return;
+    }
     res.end(JSON.stringify({
       result: 'ok',
       data: { interfaces: [{ interface: 'eth0', ipv4: { address: state.addresses.v4 }, ipv6: { address: state.addresses.v6 } }] },
@@ -1126,6 +1130,52 @@ test('addon: no options → token, own CA, a certificate a device with the CA tr
     const renewed = new X509Certificate(await readFile(join(dirs.data, 'server-cert.pem'), 'utf8'));
     assert.equal(renewed.checkIP('192.168.1.50'), '192.168.1.50');
     assert.equal((await getTrusting(caPem, `https://127.0.0.1:${port}/api/health`)).status, 200);
+  } finally {
+    await server.stop();
+    supervisor.close();
+  }
+});
+
+test('addon: the web UI shows a QR code to connect, with the port Home Assistant maps', async () => {
+  const dirs = await addonDirs();
+  const port = nextPort++;
+  const ingress = nextPort++;
+  const supervisor = await fakeSupervisor({ v4: ['192.168.68.123/24'], v6: ['fd00::5/64'] });
+  supervisor.state.network = { [`${port}/tcp`]: 14174 };
+  const env = addonEnv(dirs, port, { ADDON_SUPERVISOR_URL: supervisor.url, ADDON_INGRESS_PORT: String(ingress) });
+  const server = await launch([join(ADDON, 'start.mjs')], { env, port, scheme: 'https' });
+  try {
+    const token = (await readFile(join(dirs.data, 'token'), 'utf8')).trim();
+    // The log names the port outside the container, not the one inside.
+    assert.match(server.output(), /Adresse {2}https:\/\/192\.168\.68\.123:14174\n/);
+
+    let page;
+    for (let i = 0; i < 50; i++) {
+      page = await get(`http://127.0.0.1:${ingress}/`).catch(() => null);
+      if (page) break;
+      await new Promise((r) => setTimeout(r, 50));
+    }
+    assert.equal(page.status, 200);
+    assert.match(page.headers['content-type'], /text\/html/);
+    assert.equal(page.headers['cache-control'], 'no-store');
+    const qrs = page.body.match(/<svg class="qr"/g) ?? [];
+    assert.equal(qrs.length, 2, 'own CA: one code for the certificate, one to connect');
+    assert.match(page.body, /href="https:\/\/192\.168\.68\.123:14174\/ca\.crt"/);
+
+    const href = (body) => body.match(/class="connect" href="([^"]+)"/)[1].replaceAll('&amp;', '&');
+    const link = new URL(href(page.body));
+    assert.equal(link.origin, 'https://beta.chordwright.app');
+    const params = new URLSearchParams(link.hash.split('?')[1]);
+    assert.equal(link.hash.split('?')[0], '#/settings/source');
+    assert.equal(params.get('server'), 'https://192.168.68.123:14174');
+    assert.equal(params.get('token'), token);
+
+    // Every address it answers to, IPv4 first; ?a= picks another for the code.
+    assert.match(page.body, /href="\?a=2"[^>]*>fd00::5</);
+    const v6 = await get(`http://127.0.0.1:${ingress}/?a=2`);
+    assert.equal(new URLSearchParams(new URL(href(v6.body)).hash.split('?')[1]).get('server'), 'https://[fd00::5]:14174');
+
+    assert.equal((await get(`http://127.0.0.1:${ingress}/api/user`)).status, 404);
   } finally {
     await server.stop();
     supervisor.close();
