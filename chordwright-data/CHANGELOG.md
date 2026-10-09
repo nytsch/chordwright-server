@@ -1,5 +1,13 @@
 # Changelog
 
+## 2.0.0
+
+- Der Server ist neu geschrieben, in Rust statt Node: eine einzige Programmdatei von etwa 3 MB. Das Image des Add-ons schrumpft von rund 150 MB auf unter 20 MB und startet schneller. Ordner, Token, Zertifikate und die einmal installierte CA bleiben, wie sie sind — für die App ändert sich nichts.
+- Das Add-on baut nichts mehr auf dem Home-Assistant-Rechner: Es holt die fertige Programmdatei aus dem Release dieser Version und prüft sie gegen deren Prüfsumme.
+- Derselbe Server läuft jetzt auch in der Chordwright-Desktop-App selbst (Bibliothek als Ordner auf dem Rechner); es gibt ihn nur noch einmal.
+- Beim Beenden schreibt der Server das Änderungsprotokoll noch fertig.
+- Von Hand: `chordwright-server` aus dem Release oder `cargo run --release -- --dir ./data`. Die Programmdateien für Linux sind jetzt statisch gebaut (`…-unknown-linux-musl`, auch für ARM).
+
 ## 1.7.0
 
 - Der Server kann sich selbst eine kleine Zertifizierungsstelle anlegen (`--own-ca <ordner>`), wie es das Add-on tut, und spricht damit https unter den Namen und Adressen des Rechners. Für die Desktop-App, die eine Bibliothek im WLAN freigibt.
