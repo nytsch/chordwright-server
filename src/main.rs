@@ -13,7 +13,7 @@ use std::io::Read;
 use std::path::PathBuf;
 use std::sync::mpsc;
 
-use chordwright_server::{Options, Server};
+use chordwright_server::{new_pairing_code, Options, Server, Site};
 
 struct Args {
     options: Options,
@@ -70,6 +70,9 @@ fn parse_args(argv: &[String]) -> Args {
                 })
                 .unwrap_or_default(),
             loopback_port: get("loopback-port").map(|p| p.trim().parse::<u16>().unwrap_or(0)),
+            plain_port: get("plain-port").map(|p| p.trim().parse::<u16>().unwrap_or(0)),
+            site: get("site").map(Site::dir),
+            pairing: get("pairing").map(|c| if c == "auto" { new_pairing_code() } else { c }),
             backup_every: every.unwrap_or(defaults.backup_every),
             backup_keep: keep
                 .map(|k| k.max(1.0) as usize)
@@ -129,6 +132,12 @@ fn main() {
         }
         if let Some(port) = ready.loopback_port {
             println!("  local  http://127.0.0.1:{port}");
+        }
+        for url in ready.lan.iter().flat_map(|l| &l.site) {
+            println!("  app    {url}");
+        }
+        if let Some(code) = &o.pairing {
+            println!("  code   {code}");
         }
         println!(
             "  auth   {}",

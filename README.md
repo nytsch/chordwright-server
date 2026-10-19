@@ -123,6 +123,9 @@ wrote it.
 | `--own-ca` | none | a folder: https with a certificate authority of its own kept there (as the add-on does), the CA at `GET /ca.crt` |
 | `--hostnames` | none | extra names or addresses for that certificate, comma-separated |
 | `--loopback-port` | none | also plain http on `127.0.0.1` at this port (`0` = any) — for the program that started the server |
+| `--plain-port` | none | also plain http on `--host` at this port (`0` = any) — for a browser without the CA; the token crosses the network unencrypted |
+| `--site` | none | a folder served under `/` (the app for a browser); unknown paths without a dot get its `index.html` |
+| `--pairing` | none | a code (or `auto` for six random digits) a browser trades for a guest token at `POST /api/pair` |
 
 `--port 0` lets the system pick a free port; `--ready-json` says which.
 
@@ -144,6 +147,21 @@ it, and a warning scrolls past. For a phone on the same network:
 chordwright-server --dir ./data --host 0.0.0.0 --token $(openssl rand -hex 16)
 ```
 
+**The app for a browser on another computer** — no install, no certificate:
+the program that starts the server hands in the app's files (`--site`, or
+`Options::site` from Rust, as the desktop app does with a build embedded in
+itself), a plain http port and a pairing code. The browser opens
+`http://<name>.local:<plain-port>`, the page asks for the code and trades it
+for a guest token: a token made from the server's (HMAC), so the server's own
+token never leaves the program, and one that keeps working across restarts for
+as long as pairing is on. Without pairing every guest token is refused. Five
+wrong codes shut pairing for 30 seconds.
+
+```sh
+chordwright-server --dir ~/Songs --host 0.0.0.0 --token $(openssl rand -hex 16) \
+  --site ./dist-lite --plain-port 4180 --pairing auto
+```
+
 **https:** the app is usually opened over `https://`, and a browser will not let
 an https page talk to an `http://` server anywhere but on the same machine
 (mixed content). On a network, pass `--cert` and `--key`. The Home Assistant
@@ -156,7 +174,9 @@ also works for an app on an iPhone home screen.
 ## API
 
 ```
-GET    /api/health                → { ok, databases, dir, watching, revisions, backups, changes, stage }   (public)
+GET    /api/health                → { ok, databases, dir, watching, revisions, backups, changes, stage, pairing }   (public)
+POST   /api/pair                  ← { code }  → { token } | 403 wrong | 429 { retryAfter } | 404 pairing off   (public)
+GET    /*                         → the app's files, with --site   (public)
 GET    /api/:db                   → { key: value }
 GET    /api/:db?revs=1            → { records: { key: value }, revs: { key: rev }, changes: { key: change } }
 GET    /api/:db/record/:key       → { value, rev, change } | 404 { rev: null, change }
