@@ -3,10 +3,11 @@
 //! The program that started the server shows the code (the desktop app next
 //! to the address); a browser on another computer types it in and gets a
 //! token of its own back (`POST /api/pair`). That token is not the server's
-//! token but a guest token made from it — so the server's token never leaves
-//! the program, and a guest token keeps working when the server restarts
-//! (another wifi, a new certificate) as long as pairing is on. Pairing off,
-//! or another server token: every guest is out.
+//! token but a guest token made from it and the code — so the server's token
+//! never leaves the program, and a guest token keeps working when the server
+//! restarts (another wifi, a new certificate) as long as it is started with
+//! the same code. Pairing off, another code or another server token: every
+//! guest is out.
 //!
 //! Six digits are few, so wrong codes cost time: after a handful the server
 //! stops listening to codes for a while.
@@ -35,8 +36,8 @@ fn unhex(text: &str) -> Option<Vec<u8>> {
         .collect()
 }
 
-fn key(token: &str) -> hmac::Key {
-    hmac::Key::new(hmac::HMAC_SHA256, token.as_bytes())
+fn key(token: &str, code: &str) -> hmac::Key {
+    hmac::Key::new(hmac::HMAC_SHA256, format!("{token}\n{code}").as_bytes())
 }
 
 /// Six random digits, for the program that starts the server.
@@ -48,18 +49,18 @@ pub fn new_code() -> String {
     format!("{:06}", u32::from_le_bytes(bytes) % 1_000_000)
 }
 
-/// A token for one browser, made from the server's.
-pub fn guest_token(token: &str) -> String {
+/// A token for one browser, made from the server's and the code.
+fn guest_token(token: &str, code: &str) -> String {
     let mut nonce = [0u8; 16];
     SystemRandom::new()
         .fill(&mut nonce)
         .expect("system randomness");
     let nonce = hex(&nonce);
-    let tag = hmac::sign(&key(token), format!("guest:{nonce}").as_bytes());
+    let tag = hmac::sign(&key(token, code), format!("guest:{nonce}").as_bytes());
     format!("{GUEST_PREFIX}.{nonce}.{}", hex(tag.as_ref()))
 }
 
-pub fn is_guest_token(token: &str, candidate: &str) -> bool {
+fn is_guest_token(token: &str, code: &str, candidate: &str) -> bool {
     let mut parts = candidate.split('.');
     let (Some(GUEST_PREFIX), Some(nonce), Some(tag), None) =
         (parts.next(), parts.next(), parts.next(), parts.next())
@@ -70,7 +71,8 @@ pub fn is_guest_token(token: &str, candidate: &str) -> bool {
         return false;
     };
     !token.is_empty()
-        && hmac::verify(&key(token), format!("guest:{nonce}").as_bytes(), &tag).is_ok()
+        && !code.is_empty()
+        && hmac::verify(&key(token, code), format!("guest:{nonce}").as_bytes(), &tag).is_ok()
 }
 
 pub enum Attempt {
@@ -94,6 +96,11 @@ impl Pairing {
         }
     }
 
+    /// Whether `candidate` is a guest token this pairing handed out.
+    pub fn admits(&self, token: &str, candidate: &str) -> bool {
+        is_guest_token(token, &self.code, candidate)
+    }
+
     pub fn attempt(&self, token: &str, code: &str) -> Attempt {
         let mut wrong = self.wrong.lock().unwrap_or_else(|e| e.into_inner());
         if let Some(since) = wrong.1 {
@@ -106,7 +113,7 @@ impl Pairing {
         let given: String = code.chars().filter(|c| !c.is_whitespace()).collect();
         if !self.code.is_empty() && given == self.code {
             *wrong = (0, None);
-            return Attempt::Paired(guest_token(token));
+            return Attempt::Paired(guest_token(token, &self.code));
         }
         wrong.0 += 1;
         if wrong.0 >= TRIES {
@@ -122,14 +129,15 @@ mod tests {
 
     #[test]
     fn a_guest_token_is_made_from_the_server_token() {
-        let guest = guest_token("secret");
-        assert!(is_guest_token("secret", &guest));
-        assert!(!is_guest_token("other", &guest));
-        assert!(!is_guest_token("", &guest));
-        assert!(!is_guest_token("secret", "secret"));
+        let guest = guest_token("secret", "123456");
+        assert!(is_guest_token("secret", "123456", &guest));
+        assert!(!is_guest_token("other", "123456", &guest));
+        assert!(!is_guest_token("secret", "654321", &guest));
+        assert!(!is_guest_token("", "123456", &guest));
+        assert!(!is_guest_token("secret", "123456", "secret"));
         let last = if guest.ends_with('0') { '1' } else { '0' };
         let forged = format!("{}{last}", &guest[..guest.len() - 1]);
-        assert!(!is_guest_token("secret", &forged));
+        assert!(!is_guest_token("secret", "123456", &forged));
     }
 
     #[test]

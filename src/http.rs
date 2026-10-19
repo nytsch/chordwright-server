@@ -52,7 +52,7 @@ use tokio::sync::mpsc;
 
 use crate::backups::Backups;
 use crate::journal::Journal;
-use crate::pairing::{is_guest_token, Attempt, Pairing};
+use crate::pairing::{Attempt, Pairing};
 use crate::site::{self, Site};
 use crate::stage::{clean_room, Answer, Stage};
 use crate::store::{is_database, is_valid_key, key_for_path, Expect, Outcome, Store, DATABASES};
@@ -321,8 +321,11 @@ async fn route(s: Arc<Shared>, req: Request<Incoming>) -> Response<Body> {
             .and_then(|h| h.strip_prefix("Bearer ").map(String::from))
             .or_else(|| param("token"))
             .unwrap_or_default();
-        // A guest only while pairing is on: turned off, every browser is out.
-        let guest = s.pairing.is_some() && is_guest_token(&s.token, &given);
+        // A guest only while pairing is on with the same code.
+        let guest = s
+            .pairing
+            .as_ref()
+            .is_some_and(|p| p.admits(&s.token, &given));
         if given != s.token && !guest {
             return error(401, "unauthorised");
         }

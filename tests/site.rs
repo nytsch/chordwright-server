@@ -95,11 +95,19 @@ fn a_browser_pairs_with_a_code() {
     assert!(health.contains(r#""pairing":true"#), "{health}");
     drop(server);
 
-    // Restarted with pairing: still in. Without: out.
+    // Restarted with the same code: still in. Another code, or none: out.
     let again = Server::start(options.clone()).unwrap();
     let port = again.ready().plain_port.unwrap();
     assert!(request(port, "GET", "/api/library", Some(&guest), "").starts_with("HTTP/1.1 200"));
     drop(again);
+    let other = Server::start(Options {
+        pairing: Some("111111".into()),
+        ..options.clone()
+    })
+    .unwrap();
+    let port = other.ready().plain_port.unwrap();
+    assert!(request(port, "GET", "/api/library", Some(&guest), "").starts_with("HTTP/1.1 401"));
+    drop(other);
     let closed = Server::start(Options {
         pairing: None,
         ..options

@@ -152,9 +152,10 @@ the program that starts the server hands in the app's files (`--site`, or
 `Options::site` from Rust, as the desktop app does with a build embedded in
 itself), a plain http port and a pairing code. The browser opens
 `http://<name>.local:<plain-port>`, the page asks for the code and trades it
-for a guest token: a token made from the server's (HMAC), so the server's own
-token never leaves the program, and one that keeps working across restarts for
-as long as pairing is on. Without pairing every guest token is refused. Five
+for a guest token: a token made from the server's and the code (HMAC), so the
+server's own token never leaves the program, and one that keeps working across
+restarts started with the same code. Another code, or no pairing, and every
+guest token is refused. Five
 wrong codes shut pairing for 30 seconds.
 
 ```sh
