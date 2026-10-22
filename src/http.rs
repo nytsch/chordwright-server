@@ -24,7 +24,9 @@
 //!   POST   /api/backups            → a snapshot now → 201
 //!   POST   /api/backups/:id/restore → { restored, safety, changed }
 //!   DELETE /api/backups/:id
+//!   POST   /api/pair               → body { code } → { token }, a guest token (pairing.rs) | 403 | 429
 //!   GET    /ca.crt                 → the authority that signed the certificate, as DER
+//!   GET    /*                      → the app, when the server was given one (site.rs)
 //! ```
 //!
 //! PUT and DELETE take `If-Match: "<rev>"` or `If-None-Match: *`; when the
@@ -50,6 +52,8 @@ use tokio::sync::mpsc;
 
 use crate::backups::Backups;
 use crate::journal::Journal;
+use crate::pairing::{Attempt, Pairing};
+use crate::site::{self, Site};
 use crate::stage::{clean_room, Answer, Stage};
 use crate::store::{is_database, is_valid_key, key_for_path, Expect, Outcome, Store, DATABASES};
 use crate::util::{decode_component, now_ms, number, parse_query};
@@ -104,6 +108,8 @@ pub struct Shared {
     pub backup_every: f64,
     pub backup_keep: usize,
     pub ca_der: Option<Vec<u8>>,
+    pub site: Option<Site>,
+    pub pairing: Option<Pairing>,
     pub store: Store,
     pub backups: Backups,
     pub journal: Journal,
@@ -284,7 +290,12 @@ async fn route(s: Arc<Shared>, req: Request<Incoming>) -> Response<Body> {
             .expect("valid response");
     }
     if part(0) != Some("api") {
-        return error(404, "not found");
+        let page = s
+            .site
+            .as_ref()
+            .filter(|_| method == Method::GET || method == Method::HEAD)
+            .and_then(|site| site::respond(site, &path, method == Method::HEAD));
+        return page.unwrap_or_else(|| error(404, "not found"));
     }
     if part(1) == Some("health") {
         return send(
@@ -298,13 +309,24 @@ async fn route(s: Arc<Shared>, req: Request<Incoming>) -> Response<Body> {
                 "backups": true,
                 "changes": true,
                 "stage": true,
+                "pairing": s.pairing.is_some(),
             }),
         );
     }
+    if part(1) == Some("pair") && parts.len() == 2 {
+        return pair(&s, req).await;
+    }
     if !s.token.is_empty() {
-        let bearer = header(req.headers(), "authorization")
-            .is_some_and(|h| h == format!("Bearer {}", s.token));
-        if !bearer && param("token").as_deref() != Some(s.token.as_str()) {
+        let given = header(req.headers(), "authorization")
+            .and_then(|h| h.strip_prefix("Bearer ").map(String::from))
+            .or_else(|| param("token"))
+            .unwrap_or_default();
+        // A guest only while pairing is on with the same code.
+        let guest = s
+            .pairing
+            .as_ref()
+            .is_some_and(|p| p.admits(&s.token, &given));
+        if given != s.token && !guest {
             return error(401, "unauthorised");
         }
     }
@@ -453,6 +475,29 @@ async fn route(s: Arc<Shared>, req: Request<Incoming>) -> Response<Body> {
         };
     }
     error(405, "method not allowed")
+}
+
+async fn pair(s: &Arc<Shared>, req: Request<Incoming>) -> Response<Body> {
+    let Some(pairing) = s.pairing.as_ref() else {
+        return error(404, "pairing is off");
+    };
+    if req.method() != Method::POST {
+        return error(405, "method not allowed");
+    }
+    let body = match req.into_body().collect().await {
+        Ok(b) => serde_json::from_slice::<Value>(&b.to_bytes()).unwrap_or(Value::Null),
+        Err(e) => return error(400, &e.to_string()),
+    };
+    let code = body.get("code").and_then(Value::as_str).unwrap_or("");
+    match pairing.attempt(&s.token, code) {
+        Attempt::Paired(token) => send(200, json!({ "token": token })),
+        Attempt::Wrong => error(403, "wrong code"),
+        Attempt::Locked(wait) => respond(
+            429,
+            Some(&json!({ "error": "too many wrong codes", "retryAfter": wait.as_secs() + 1 })),
+            &[("retry-after", (wait.as_secs() + 1).to_string())],
+        ),
+    }
 }
 
 async fn stage(s: &Arc<Shared>, req: Request<Incoming>, rest: &[String]) -> Response<Body> {

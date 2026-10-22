@@ -14,8 +14,12 @@ mod backups;
 mod certs;
 
 pub use certs::{certificate_names, ensure_own_certificate, Own};
+pub use pairing::new_code as new_pairing_code;
+pub use site::{Files, Site};
 mod http;
 mod journal;
+mod pairing;
+mod site;
 mod stage;
 mod store;
 mod util;
@@ -65,6 +69,14 @@ pub struct Options {
     /// The same server once more, as plain http on 127.0.0.1 — for the
     /// program that started it, which then needs no certificate.
     pub loopback_port: Option<u16>,
+    /// The same server once more, as plain http on `host` — for a browser
+    /// that has not installed the certificate authority. Whatever it sends,
+    /// the token too, crosses the network unencrypted.
+    pub plain_port: Option<u16>,
+    /// The app itself under `/`, for a browser (site.rs).
+    pub site: Option<Site>,
+    /// A browser that types this code gets a guest token (pairing.rs).
+    pub pairing: Option<String>,
     /// A snapshot this often (hours) when something changed; 0 never.
     pub backup_every: f64,
     /// How many scheduled snapshots stay.
@@ -85,6 +97,9 @@ impl Default for Options {
             own_ca: None,
             hostnames: Vec::new(),
             loopback_port: None,
+            plain_port: None,
+            site: None,
+            pairing: None,
             backup_every: 24.0,
             backup_keep: 14,
         }
@@ -97,6 +112,10 @@ pub struct Lan {
     pub port: u16,
     pub urls: Vec<String>,
     pub ca: bool,
+    /// Where a browser opens the app (`site`): the plain listener's
+    /// addresses when there is one, else the main one's.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub site: Vec<String>,
 }
 
 /// Where the server listens, once it does.
@@ -106,6 +125,7 @@ pub struct Ready {
     pub url: String,
     pub port: u16,
     pub loopback_port: Option<u16>,
+    pub plain_port: Option<u16>,
     pub dir: PathBuf,
     pub tls: bool,
     pub lan: Option<Lan>,
@@ -281,6 +301,12 @@ fn start(mut o: Options) -> Result<Server, String> {
         backup_every: o.backup_every,
         backup_keep: o.backup_keep,
         ca_der,
+        site: o.site.clone(),
+        pairing: o
+            .pairing
+            .clone()
+            .filter(|c| !c.is_empty())
+            .map(pairing::Pairing::new),
         store,
         backups: Backups::new(&root, o.backup_keep),
         journal: Journal::open(&root),
@@ -297,7 +323,7 @@ fn start(mut o: Options) -> Result<Server, String> {
         .build()
         .map_err(|e| e.to_string())?;
 
-    let (main, loopback) = runtime.block_on(async {
+    let (main, loopback, plain) = runtime.block_on(async {
         let main = TcpListener::bind((o.host.as_str(), o.port))
             .await
             .map_err(|e| format!("listen {}:{}: {e}", o.host, o.port))?;
@@ -309,10 +335,22 @@ fn start(mut o: Options) -> Result<Server, String> {
             ),
             None => None,
         };
-        Ok::<_, String>((main, loopback))
+        let plain = match o.plain_port {
+            Some(port) => Some(
+                TcpListener::bind((o.host.as_str(), port))
+                    .await
+                    .map_err(|e| format!("listen {}:{port}: {e}", o.host))?,
+            ),
+            None => None,
+        };
+        Ok::<_, String>((main, loopback, plain))
     })?;
     let port = main.local_addr().map_err(|e| e.to_string())?.port();
     let loopback_port = loopback
+        .as_ref()
+        .and_then(|l| l.local_addr().ok())
+        .map(|a| a.port());
+    let plain_port = plain
         .as_ref()
         .and_then(|l| l.local_addr().ok())
         .map(|a| a.port());
@@ -322,22 +360,39 @@ fn start(mut o: Options) -> Result<Server, String> {
     if let Some(loopback) = loopback {
         runtime.spawn(serve(loopback, None, shared.clone()));
     }
+    if let Some(plain) = plain {
+        runtime.spawn(serve(plain, None, shared.clone()));
+    }
     runtime.spawn(background(shared.clone()));
     let watchers = watch(&shared);
 
     let scheme = if is_tls { "https" } else { "http" };
-    let lan = exposed.then(|| Lan {
-        port,
-        urls: lan_addresses()
+    let lan = exposed.then(|| {
+        let addresses = lan_addresses();
+        let urls: Vec<String> = addresses
             .iter()
             .map(|a| format!("{scheme}://{a}:{port}"))
-            .collect(),
-        ca: shared.ca_der.is_some(),
+            .collect();
+        let site = match (&o.site, plain_port) {
+            (None, _) => Vec::new(),
+            (Some(_), Some(plain)) => addresses
+                .iter()
+                .map(|a| format!("http://{a}:{plain}"))
+                .collect(),
+            (Some(_), None) => urls.clone(),
+        };
+        Lan {
+            port,
+            urls,
+            ca: shared.ca_der.is_some(),
+            site,
+        }
     });
     let ready = Ready {
         url: format!("{scheme}://{}:{port}", o.host),
         port,
         loopback_port,
+        plain_port,
         dir: root,
         tls: is_tls,
         lan,
