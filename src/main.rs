@@ -1,17 +1,18 @@
 //! chordwright serve, as a program:
 //!
 //!   chordwright-server --dir ./data --port 4174
-//!   chordwright-server --addon            the Home Assistant add-on (addon.rs, panel.rs)
+//!   chordwright-server --addon            the Home Assistant add-on (addon.rs, instances.rs, panel.rs)
 //!
 //! The desktop app does not start this; it runs the library in its own
 //! process (the library crate).
 
 mod addon;
+mod instances;
 mod panel;
 
 use std::io::Read;
 use std::path::PathBuf;
-use std::sync::mpsc;
+use std::sync::{mpsc, Arc};
 
 use chordwright_server::{new_pairing_code, Options, Server, Site};
 
@@ -87,17 +88,14 @@ fn parse_args(argv: &[String]) -> Args {
 fn main() {
     let argv: Vec<String> = std::env::args().skip(1).collect();
     let mut args = parse_args(&argv);
+    let mut addon = None;
     if args.addon {
-        let (options, panel) = addon::options().unwrap_or_else(|err| {
+        let setup = addon::options().unwrap_or_else(|err| {
             eprintln!("{err}");
             std::process::exit(1);
         });
-        args.options = options;
-        if let Some((port, panel)) = panel {
-            if let Err(err) = panel::start(port, panel) {
-                eprintln!("Web-UI startet nicht: {err}");
-            }
-        }
+        args.options = setup.options.clone();
+        addon = Some(setup);
     }
     let o = args.options.clone();
     let server = match Server::start(args.options) {
@@ -109,6 +107,38 @@ fn main() {
             std::process::exit(1);
         }
     };
+    // Das Add-on: die weiteren Bibliotheken auf demselben Port, dann die Web-UI,
+    // die sie verwaltet.
+    if let Some(setup) = addon {
+        let registry = Arc::new(instances::Registry::open(
+            &setup.data,
+            &setup.share,
+            &setup.folder,
+            o.backup_every,
+            o.backup_keep,
+            server.hub(),
+        ));
+        for entry in registry.list() {
+            println!(
+                "Bibliothek „{}“: {} unter /i/{}",
+                entry.name,
+                registry.dir_of(&entry).display(),
+                entry.id
+            );
+        }
+        let secret = instances::new_token();
+        if let (Some((port, panel)), Ok(secret)) = (setup.panel, secret) {
+            let ui = panel::Ui {
+                panel,
+                registry,
+                hub: server.hub(),
+                secret,
+            };
+            if let Err(err) = panel::start(port, ui) {
+                eprintln!("Web-UI startet nicht: {err}");
+            }
+        }
+    }
     let ready = server.ready();
     if args.ready_json {
         // For a program that started this one: one line it can parse. With a

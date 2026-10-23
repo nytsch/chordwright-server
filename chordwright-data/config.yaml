@@ -13,7 +13,8 @@ startup: application
 # im Zertifikat stehen, und unter welchem Port das Add-on erreichbar ist.
 hassio_api: true
 boot: auto
-# „Web-UI öffnen“: eine Seite mit dem QR-Code, mit dem sich ein Gerät verbindet.
+# „Web-UI öffnen“: die Bibliotheken mit ihren Zahlen, der QR-Code zum
+# Verbinden, weitere Bibliotheken anlegen und verwalten.
 ingress: true
 ingress_port: 8099
 panel_icon: mdi:qrcode

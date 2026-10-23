@@ -64,7 +64,7 @@ fn resolve_token(configured: Option<&str>, data: &Path) -> Result<(String, bool)
     Ok((token, true))
 }
 
-fn write_private(path: &Path, text: &str) -> std::io::Result<()> {
+pub fn write_private(path: &Path, text: &str) -> std::io::Result<()> {
     let mut options = std::fs::OpenOptions::new();
     options.write(true).create(true).truncate(true);
     #[cfg(unix)]
@@ -183,9 +183,21 @@ fn strings(value: &Value) -> Vec<String> {
         .collect()
 }
 
+/// Was `options` liefert: den Server, und was danach kommt — die weiteren
+/// Bibliotheken (instances.rs) und, unter Home Assistant, die Web-UI.
+pub struct Addon {
+    pub options: Options,
+    /// Mit dem Port der Web-UI.
+    pub panel: Option<(u16, Panel)>,
+    pub data: PathBuf,
+    pub share: PathBuf,
+    /// Der Ordner der Hauptbibliothek in share.
+    pub folder: String,
+}
+
 /// Die Optionen des Servers und, unter Home Assistant, was die Web-UI zeigt
 /// (mit ihrem Port); vorher die Übersicht im Log.
-pub fn options() -> Result<(Options, Option<(u16, Panel)>), String> {
+pub fn options() -> Result<Addon, String> {
     let data = PathBuf::from(env_or("ADDON_DATA_DIR", "/data"));
     let share = PathBuf::from(env_or("ADDON_SHARE_DIR", "/share"));
     let ssl = PathBuf::from(env_or("ADDON_SSL_DIR", "/ssl"));
@@ -315,7 +327,9 @@ pub fn options() -> Result<(Options, Option<(u16, Panel)>), String> {
     }
     println!("In der App: Einstellungen → Datenquelle → Adresse (ohne /api) und Token eintragen.");
     if in_home_assistant {
-        println!("Oder per QR-Code: oben beim Add-on „Web-UI öffnen“.");
+        println!(
+            "Oder per QR-Code: oben beim Add-on „Web-UI öffnen“. Dort auch weitere Bibliotheken."
+        );
     }
     println!("{rule}");
 
@@ -336,6 +350,8 @@ pub fn options() -> Result<(Options, Option<(u16, Panel)>), String> {
             port: outside.clone(),
             token: token.clone(),
             own_ca: own.is_some(),
+            folder: folder.clone(),
+            samba: in_home_assistant,
         };
         Some((ingress_port, panel))
     } else {
@@ -356,7 +372,7 @@ pub fn options() -> Result<(Options, Option<(u16, Panel)>), String> {
         None => (None, None),
     };
     let options = Options {
-        dir,
+        dir: dir.clone(),
         host: "0.0.0.0".into(),
         port,
         token,
@@ -367,5 +383,11 @@ pub fn options() -> Result<(Options, Option<(u16, Panel)>), String> {
         backup_keep: keep.map(|k| k as usize).unwrap_or(defaults.backup_keep),
         ..defaults
     };
-    Ok((options, panel))
+    Ok(Addon {
+        options,
+        panel,
+        data,
+        share,
+        folder,
+    })
 }

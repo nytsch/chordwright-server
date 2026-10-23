@@ -768,6 +768,84 @@ test('addon: the web UI shows a QR code to connect, with the port Home Assistant
   }
 });
 
+test('addon: the web UI adds libraries under /i/<id>, each with its own token, and shows their figures', async () => {
+  const dirs = await addonDirs();
+  const port = nextPort++;
+  const ingress = nextPort++;
+  const supervisor = await fakeSupervisor({ v4: ['192.168.68.123/24'], v6: [] });
+  const env = addonEnv(dirs, port, { ADDON_SUPERVISOR_URL: supervisor.url, ADDON_INGRESS_PORT: String(ingress) });
+  const ui = `http://127.0.0.1:${ingress}/`;
+  const post = (fields) =>
+    fetch(ui, { method: 'POST', body: new URLSearchParams(fields), redirect: 'manual' });
+  let server = await launch([ADDON_START], { env, port, scheme: 'https' });
+  try {
+    let page;
+    for (let i = 0; i < 50 && !page; i++) {
+      page = await get(ui).catch(() => null);
+      if (!page) await new Promise((r) => setTimeout(r, 50));
+    }
+    assert.match(page.body, /Hauptbibliothek/);
+    const csrf = page.body.match(/name="csrf" value="([0-9a-f]+)"/)[1];
+
+    // Without the page's secret nothing happens.
+    const forged = await post({ do: 'create', name: 'Fremd' });
+    assert.equal(forged.status, 400);
+    assert.match(await forged.text(), /abgelaufen/);
+
+    const created = await post({ do: 'create', name: 'Die Bläser', csrf });
+    assert.equal(created.status, 303);
+    assert.equal(created.headers.get('location'), '?i=die-blaeser&m=created');
+    const saved = JSON.parse(await readFile(join(dirs.data, 'instances.json'), 'utf8')).instances;
+    assert.equal(saved.length, 1);
+    assert.deepEqual([saved[0].id, saved[0].name, saved[0].folder], ['die-blaeser', 'Die Bläser', 'chordwright-die-blaeser']);
+    const token = saved[0].token;
+    const main = (await readFile(join(dirs.data, 'token'), 'utf8')).trim();
+    assert.notEqual(token, main);
+
+    // Its page: a code that connects to /i/<id> with its token, two cards in the overview.
+    page = await get(`${ui}?i=die-blaeser&m=created`);
+    assert.match(page.body, /Bibliothek angelegt/);
+    assert.equal((page.body.match(/class="lib" href=/g) ?? []).length, 2);
+    const link = new URL(page.body.match(/class="connect" href="([^"]+)"/)[1].replaceAll('&amp;', '&'));
+    const params = new URLSearchParams(link.hash.split('?')[1]);
+    assert.equal(params.get('server'), `https://192.168.68.123:${port}/i/die-blaeser`);
+    assert.equal(params.get('token'), token);
+
+    const base = `https://127.0.0.1:${port}/i/die-blaeser`;
+    assert.equal((await get(`${base}/api/library`, { authorization: `Bearer ${main}` })).status, 401);
+    assert.equal((await get(`${base}/api/library`, { authorization: `Bearer ${token}` })).status, 200);
+    assert.equal((await get(`https://127.0.0.1:${port}/api/library`, { authorization: `Bearer ${token}` })).status, 401);
+
+    // A song dropped into its folder shows in the figures.
+    await writeFile(join(dirs.share, 'chordwright-die-blaeser', 'library', 'songs', 'a.chordpro'), '{title: A}\n');
+    page = await get(`${ui}?i=die-blaeser`);
+    assert.match(page.body, /<span class="big">1<\/span><span class="muted">Songs/);
+
+    // Across a restart it is still there.
+    await server.stop();
+    server = await launch([ADDON_START], { env, port, scheme: 'https' });
+    assert.match(server.output(), /Bibliothek „Die Bläser“/);
+    assert.equal((await get(`${base}/api/library`, { authorization: `Bearer ${token}` })).status, 200);
+
+    // A new token shuts the old one out; removing it keeps the folder.
+    page = await get(`${ui}?i=die-blaeser`);
+    const csrf2 = page.body.match(/name="csrf" value="([0-9a-f]+)"/)[1];
+    assert.equal((await post({ do: 'rename', id: 'die-blaeser', name: 'Bläser', csrf: csrf2 })).status, 303);
+    assert.equal((await post({ do: 'token', id: 'die-blaeser', csrf: csrf2 })).status, 303);
+    assert.equal((await get(`${base}/api/library`, { authorization: `Bearer ${token}` })).status, 401);
+    const renewed = JSON.parse(await readFile(join(dirs.data, 'instances.json'), 'utf8')).instances[0];
+    assert.equal(renewed.name, 'Bläser');
+    assert.equal((await get(`${base}/api/library`, { authorization: `Bearer ${renewed.token}` })).status, 200);
+    const removed = await post({ do: 'remove', id: 'die-blaeser', csrf: csrf2 });
+    assert.equal(removed.headers.get('location'), '?m=removed');
+    assert.equal((await get(`${base}/api/library`, { authorization: `Bearer ${renewed.token}` })).status, 404);
+    assert.ok(readFileSync(join(dirs.share, 'chordwright-die-blaeser', 'library', 'songs', 'a.chordpro')));
+  } finally {
+    await server.stop();
+    supervisor.close();
+  }
+});
+
 test('addon: extra hostnames go into the certificate; an expiring one is renewed', async () => {
   const dirs = await addonDirs();
   await writeFile(join(dirs.data, 'options.json'), JSON.stringify({ ssl: true, folder: 'chordwright', hostnames: ['ha.fritz.box', '10.0.0.9'] }));

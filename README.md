@@ -55,8 +55,10 @@ writes that folder.
   `…-aarch64-unknown-linux-musl` (static), `…-aarch64-apple-darwin`,
   `…-x86_64-apple-darwin`, `…-x86_64-pc-windows-msvc.exe`.
 - **The Home Assistant add-on**: the same program, `--addon`
-  (`src/addon.rs`), with a web UI behind *Open Web UI* that shows a QR code to
-  connect a device (`src/panel.rs`). Its image fetches the static Linux file of the release that
+  (`src/addon.rs`), with a web UI behind *Open Web UI* (`src/panel.rs`): every
+  library with its songs, sets, connected devices, last changes, backups and
+  open stages; a QR code to connect a device; and more libraries, added,
+  renamed, given a new token or removed there (`src/instances.rs`). Its image fetches the static Linux file of the release that
   matches the add-on's version and checks it against `SHA256SUMS`; nothing is
   compiled on the Home Assistant machine. So a release comes first (tag →
   `release.yml`), the version bump on `main` second.
@@ -67,6 +69,22 @@ writes that folder.
 Up to 1.7.0 this was a Node server. The files on disk, the routes, the answers
 and the add-on's certificate authority are the same: a folder, a token and an
 installed CA carry over as they are.
+
+## More than one library
+
+One server can serve more libraries on the same port, each under `/i/<id>`
+with a folder, a token, backups, a change journal and a shared stage of its
+own — two bands, a choir, a test library. An app connects to
+`https://host:4174/i/<id>` as to any other server; it only ever appends
+`/api/…` to the address, so nothing changes there. A token opens its own
+library only. `/ca.crt` is the same for all of them.
+
+From Rust: `server.hub().add(id, Library { dir, token, … })`, `remove(id)`,
+`stats(Some(id))` (songs, sets, bytes, open event streams, backups, recent
+changes, stage rooms). The Home Assistant add-on keeps its list in
+`/data/instances.json` and the folders next to the main one in share
+(`share/chordwright-<id>`); removing one there only stops serving it — the
+folder stays, and adding one with the same name brings it back.
 
 ## What the folder looks like
 
@@ -201,6 +219,8 @@ PUT    /api/stage/:room           ← { state }          → 200 snapshot | 403 
 POST   /api/stage/:room/here      ← { name?, attached? } → 200 snapshot   (a follower is there)
 DELETE /api/stage/:room/here                                         → 200 snapshot
 ```
+
+Every route also exists under `/i/<id>` for a library added with `Hub::add`.
 
 `:db` is `library` or `user`. Keys are file names: letters, digits, `.`, `_`,
 `-`, starting with a letter or digit. Clients send `X-Chordwright-Client` on

@@ -1,5 +1,10 @@
 # Changelog
 
+## Unveröffentlicht
+
+- Mehrere Bibliotheken: In der Web-UI legst du weitere an, jede mit eigenem Ordner (`share/chordwright-<name>`), eigenem Token, eigenen Sicherungen und eigener Bühne, erreichbar unter derselben Adresse mit `/i/<name>`. Umbenennen, neuer Token und Entfernen (der Ordner bleibt) gehen dort auch. Für die App ändert sich nichts: Sie verbindet sich per QR-Code wie bisher.
+- Die Web-UI zeigt jetzt mehr als den QR-Code: jede Bibliothek mit Songs, Sets, gerade verbundenen Geräten und letzter Änderung; zur gewählten Größe, Sicherungen, die letzten Änderungen mit Namen und offene Bühnen.
+
 ## 2.0.0
 
 - Der Server ist neu geschrieben, in Rust statt Node: eine einzige Programmdatei von etwa 3 MB. Das Image des Add-ons schrumpft von rund 150 MB auf unter 5 MB und startet schneller; es kommt ohne Docker Hub aus (Home Assistants Basis-Image von ghcr.io zum Laden, das Image selbst ist nur die Programmdatei). Ordner, Token, Zertifikate und die einmal installierte CA bleiben, wie sie sind — für die App ändert sich nichts.
