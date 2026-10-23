@@ -179,6 +179,35 @@ impl Store {
         Ok((Value::Object(envelope).to_string(), rev))
     }
 
+    /// What a record is, for a person: a song by its title, the user records
+    /// the app keeps by what they hold, anything else by its key.
+    pub fn label(&self, db: &str, key: &str) -> String {
+        if db == "*" {
+            return format!("Sicherung {key}");
+        }
+        let at = self.locate(db, key);
+        if at.song.is_some() {
+            let title = std::fs::read_to_string(&at.path).ok().and_then(|text| {
+                text.lines().find_map(|line| {
+                    let inner = line.trim().strip_prefix('{')?.strip_suffix('}')?;
+                    let (name, value) = inner.split_once(':')?;
+                    matches!(name.trim(), "title" | "t")
+                        .then(|| value.trim().to_string())
+                        .filter(|v| !v.is_empty())
+                })
+            });
+            return title.unwrap_or_else(|| key.trim_start_matches(DOCUMENT_PREFIX).to_string());
+        }
+        match (db, key) {
+            ("library", "index") => "Song-Verzeichnis",
+            ("user", "setlists") => "Sets",
+            ("user", "songSettings") => "Song-Einstellungen",
+            ("user", "tags") => "Tags",
+            _ => key,
+        }
+        .to_string()
+    }
+
     pub fn read_versioned(&self, db: &str, key: &str) -> Versioned {
         let at = self.locate(db, key);
         let read = match &at.song {

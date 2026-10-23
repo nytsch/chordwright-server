@@ -79,7 +79,7 @@ impl Listeners {
         rx
     }
 
-    fn count(&self) -> usize {
+    pub fn count(&self) -> usize {
         self.0
             .lock()
             .unwrap_or_else(|e| e.into_inner())

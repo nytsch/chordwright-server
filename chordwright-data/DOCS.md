@@ -28,6 +28,16 @@ Beim Add-on oben **Web-UI öffnen** (oder in der Seitenleiste **Chordwright**, w
 
 Dann noch **Verbinden**. Hat der Rechner mehrere Adressen, wählst du oben auf der Seite, für welche der Code gilt. Bist du gerade auf dem Gerät, das du verbinden willst, tipp auf **hier öffnen**.
 
+### Mehrere Bibliotheken
+
+Eine Band, ein Chor, eine zum Ausprobieren: In der Web-UI legst du unter **Neue Bibliothek** weitere an. Jede hat eigene Songs, Sets, Sicherungen, eine eigene Bühne und einen eigenen Token und liegt in einem eigenen Ordner, z. B. `share/chordwright-band`. Die App erreicht sie unter derselben Adresse mit `/i/<name>` dahinter, etwa `https://192.168.1.20:4174/i/band` — der QR-Code der Bibliothek trägt das schon ein. Ein Gerät mit dem Token der einen Bibliothek kommt an die anderen nicht heran.
+
+Unter **Verwalten** benennst du eine Bibliothek um, gibst ihr einen neuen Token (danach muss sich jedes Gerät neu verbinden) oder entfernst sie. Entfernen löscht nichts: Der Ordner bleibt in share, und legst du wieder eine mit demselben Namen an, ist alles wieder da. Die Hauptbibliothek stellst du weiter unter **Konfiguration** ein.
+
+### Was die Web-UI zeigt
+
+Oben jede Bibliothek mit Songs, Sets, gerade verbundenen Geräten und der letzten Änderung. Zur gewählten außerdem die Größe, die Sicherungen, die letzten Änderungen (wer was wann) und offene Bühnen samt dem, der gerade leitet.
+
 ### Von Hand
 
 In Chordwright: **Einstellungen → Datenquelle**

@@ -1,16 +1,26 @@
-//! Die Web-UI des Add-ons (Home Assistant: „Web-UI öffnen", per Ingress): ein
-//! QR-Code, mit dem sich ein Gerät verbindet, und bei eigener CA einer fürs
-//! Zertifikat davor. Mehr nicht — eingestellt wird alles unter „Konfiguration".
+//! Die Web-UI des Add-ons (Home Assistant: „Web-UI öffnen", per Ingress):
+//! alle Bibliotheken auf einen Blick, mit Songs, Sets, verbundenen Geräten,
+//! letzter Änderung und Sicherungen; zu der gewählten die QR-Codes zum
+//! Verbinden (bei eigener CA einer fürs Zertifikat davor), die letzten
+//! Änderungen, offene Bühnen — und für die weiteren Bibliotheken (instances.rs)
+//! Anlegen, Umbenennen, neuer Token, Entfernen. Was die Hauptbibliothek
+//! betrifft, steht weiter unter „Konfiguration“.
 //!
-//! Die Seite zeigt den Token. Das darf sie, weil Home Assistant sie nur
-//! angemeldeten Nutzern ausliefert (wie das Protokoll, in dem er auch steht);
-//! deshalb nimmt sie nur Anfragen von Home Assistants Ingress-Proxy an.
+//! Die Seite zeigt die Tokens. Das darf sie, weil Home Assistant sie nur
+//! angemeldeten Nutzern ausliefert (wie das Protokoll, in dem der erste auch
+//! steht); deshalb nimmt sie nur Anfragen von Home Assistants Ingress-Proxy
+//! an. Jedes Formular trägt ein Geheimnis dieses Prozesses mit, damit keine
+//! fremde Seite im Browser eines Angemeldeten etwas abschicken kann.
 
 use std::io::{Read, Write};
 use std::net::{IpAddr, TcpListener, TcpStream};
-use std::time::Duration;
+use std::sync::Arc;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+use chordwright_server::{Hub, Stats};
 use qrcodegen::{QrCode, QrCodeEcc};
+
+use crate::instances::{Entry, Registry};
 
 /// Wohin der QR-Code führt: die Web-App, gleich auf der Datenquellen-Seite,
 /// mit Adresse und Token schon eingetragen. Dasselbe wie `connectLink` in der
@@ -29,6 +39,36 @@ fn form_encode(s: &str) -> String {
             _ => format!("%{b:02X}"),
         })
         .collect()
+}
+
+/// Umgekehrt, für die Formulare: `+` ist ein Leerzeichen, `%XX` ein Byte.
+fn form_decode(s: &str) -> String {
+    let bytes = s.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        match bytes[i] {
+            b'+' => out.push(b' '),
+            b'%' if i + 2 < bytes.len()
+                && bytes[i + 1].is_ascii_hexdigit()
+                && bytes[i + 2].is_ascii_hexdigit() =>
+            {
+                let hex = |b: u8| (b as char).to_digit(16).unwrap_or(0) as u8;
+                out.push(hex(bytes[i + 1]) * 16 + hex(bytes[i + 2]));
+                i += 2;
+            }
+            b => out.push(b),
+        }
+        i += 1;
+    }
+    String::from_utf8_lossy(&out).into_owned()
+}
+
+fn form_field(body: &str, name: &str) -> Option<String> {
+    body.split('&').find_map(|pair| {
+        let (k, v) = pair.split_once('=').unwrap_or((pair, ""));
+        (form_decode(k) == name).then(|| form_decode(v))
+    })
 }
 
 pub fn connect_link(server: &str, token: &str) -> String {
@@ -110,25 +150,234 @@ fn qr_svg(text: &str, label: &str) -> String {
     )
 }
 
-/// Was die Seite zeigt.
+fn now_ms() -> i64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |d| d.as_millis() as i64)
+}
+
+/// „vor 5 Min.“ — wie lange `then` her ist.
+fn ago(then: i64, now: i64) -> String {
+    let s = (now - then).max(0) / 1000;
+    match s {
+        0..60 => "gerade eben".into(),
+        60..3600 => format!("vor {} Min.", s / 60),
+        3600..86400 => format!("vor {} Std.", s / 3600),
+        86400..172800 => "gestern".into(),
+        _ => format!("vor {} Tagen", s / 86400),
+    }
+}
+
+/// „läuft seit 3 Std.“
+fn since(then: i64, now: i64) -> String {
+    let s = (now - then).max(0) / 1000;
+    match s {
+        0..60 => "gerade gestartet".into(),
+        60..3600 => format!("läuft seit {} Min.", s / 60),
+        3600..86400 => format!("läuft seit {} Std.", s / 3600),
+        _ => format!("läuft seit {} Tagen", s / 86400),
+    }
+}
+
+/// „1,2 MB“
+fn size(bytes: u64) -> String {
+    let b = bytes as f64;
+    if b < 1024.0 {
+        format!("{bytes} B")
+    } else if b < 1024.0 * 1024.0 {
+        format!("{} KB", (b / 1024.0).round())
+    } else {
+        format!("{:.1} MB", b / 1024.0 / 1024.0).replace('.', ",")
+    }
+}
+
+fn plural(n: u64, one: &str, many: &str) -> String {
+    format!("{n} {}", if n == 1 { one } else { many })
+}
+
+fn action_label(action: &str) -> &'static str {
+    match action {
+        "remove" => "gelöscht",
+        "file" => "von Hand gespeichert",
+        "restore" => "wiederhergestellt",
+        _ => "geändert",
+    }
+}
+
+/// Was die Seite zeigt, solange das Add-on läuft.
 #[derive(Clone)]
 pub struct Panel {
     pub addresses: Vec<String>,
     pub scheme: String,
     /// Der Port von außen (unter „Netzwerk“ umstellbar).
     pub port: String,
+    /// Der Token der Hauptbibliothek.
     pub token: String,
     pub own_ca: bool,
+    /// Der Ordner der Hauptbibliothek in share.
+    pub folder: String,
+    /// Unter Home Assistant: Pfade als „share/…“, wie Samba sie zeigt.
+    pub samba: bool,
 }
 
-impl Panel {
-    /// Die Seite. `pick` ist die Nummer der gewählten Adresse (`?a=`), falls es
-    /// mehrere gibt — der Code gilt immer für genau eine.
-    pub fn page(&self, pick: usize) -> String {
-        let list = order_addresses(&self.addresses);
-        let chosen = list.get(pick).or(list.first());
-        let server = chosen.map(|a| address_url(&self.scheme, a, &self.port));
+/// Die Bibliothek, um die es auf der Seite geht.
+struct Shown<'a> {
+    /// None: die Hauptbibliothek.
+    entry: Option<&'a Entry>,
+    name: String,
+    token: String,
+    /// `/i/<id>` oder leer.
+    path: String,
+    stats: Option<Stats>,
+}
 
+/// Panel samt dem, was sich ändert: die Bibliotheken und ihre Zahlen.
+pub struct Ui {
+    pub panel: Panel,
+    pub registry: Arc<Registry>,
+    pub hub: Hub,
+    /// Steht in jedem Formular; ohne es nimmt die Seite nichts an.
+    pub secret: String,
+}
+
+/// Eine Rückmeldung nach dem Abschicken, über `?m=` in der Adresse.
+fn notice(code: &str) -> Option<&'static str> {
+    Some(match code {
+        "created" => "Bibliothek angelegt. Jetzt ein Gerät verbinden.",
+        "renamed" => "Umbenannt.",
+        "token" => "Neuer Token. Geräte mit dem alten müssen sich neu verbinden.",
+        "removed" => "Entfernt. Der Ordner mit den Songs bleibt in share.",
+        _ => return None,
+    })
+}
+
+impl Ui {
+    fn folder_label(&self, dir: &std::path::Path, folder: &str) -> String {
+        if self.panel.samba {
+            format!("share/{folder}")
+        } else {
+            dir.display().to_string()
+        }
+    }
+
+    /// Die Seite. `id`: die gewählte Bibliothek (leer: die Hauptbibliothek),
+    /// `pick`: die Nummer der gewählten Adresse (`?a=`), falls es mehrere gibt
+    /// — ein Code gilt immer für genau eine.
+    pub fn page(
+        &self,
+        id: &str,
+        pick: usize,
+        message: Option<&str>,
+        error: Option<&str>,
+    ) -> String {
+        let now = now_ms();
+        let entries = self.registry.list();
+        let entry = entries.iter().find(|e| e.id == id);
+        let shown = match entry {
+            Some(e) => Shown {
+                entry: Some(e),
+                name: e.name.clone(),
+                token: e.token.clone(),
+                path: format!("/i/{}", e.id),
+                stats: self.hub.stats(Some(&e.id)),
+            },
+            None => Shown {
+                entry: None,
+                name: "Hauptbibliothek".into(),
+                token: self.panel.token.clone(),
+                path: String::new(),
+                stats: self.hub.stats(None),
+            },
+        };
+        let sel = shown.entry.map(|e| e.id.as_str()).unwrap_or("");
+
+        // Die Übersicht: eine Karte je Bibliothek.
+        let mut cards = String::new();
+        let mut devices = 0;
+        let all = std::iter::once((
+            None,
+            "Hauptbibliothek".to_string(),
+            self.panel.folder.clone(),
+        ))
+        .chain(
+            entries
+                .iter()
+                .map(|e| (Some(e), e.name.clone(), e.folder.clone())),
+        );
+        for (e, name, folder) in all {
+            let eid = e.map(|e| e.id.as_str()).unwrap_or("");
+            let stats = self.hub.stats(e.map(|e| e.id.as_str()));
+            let (nums, last, place) = match &stats {
+                Some(st) => {
+                    devices += st.devices;
+                    let last = match st.changes.first() {
+                        Some(c) => format!(
+                            "zuletzt {}{}",
+                            ago(c.at, now),
+                            c.by.as_deref()
+                                .map(|b| format!(" von {}", esc(b)))
+                                .unwrap_or_default()
+                        ),
+                        None => "noch keine Änderung".into(),
+                    };
+                    (
+                        format!(
+                            "{} · {} · <span title=\"Gerade verbundene Apps\">{}</span>",
+                            plural(st.songs, "Song", "Songs"),
+                            plural(st.sets, "Set", "Sets"),
+                            plural(st.devices as u64, "Gerät", "Geräte")
+                        ),
+                        last,
+                        self.folder_label(&st.dir, &folder),
+                    )
+                }
+                None => (
+                    "startet nicht — siehe Protokoll".into(),
+                    String::new(),
+                    folder.clone(),
+                ),
+            };
+            let current = if eid == sel {
+                " aria-current=\"true\""
+            } else {
+                ""
+            };
+            let live = if stats.as_ref().is_some_and(|s| s.devices > 0) {
+                "<span class=\"dot\" title=\"Gerade verbunden\"></span>"
+            } else {
+                ""
+            };
+            cards.push_str(&format!(
+                "<a class=\"lib\" href=\"?i={}\"{current}><b>{live}{}</b><span class=\"nums\">{nums}</span>\
+                 <span class=\"muted\">{last}</span><span class=\"muted path\">{}</span></a>\n",
+                esc(eid),
+                esc(&name),
+                esc(&place)
+            ));
+        }
+        let create = format!(
+            "<form class=\"lib new\" method=\"post\" action=\"./\">{}<input type=\"hidden\" name=\"do\" value=\"create\">\
+             <label for=\"new-name\"><b>Neue Bibliothek</b></label>\
+             <input id=\"new-name\" name=\"name\" required maxlength=\"60\" placeholder=\"z. B. Band, Chor\" autocomplete=\"off\">\
+             <button>Anlegen</button></form>",
+            self.csrf()
+        );
+
+        // Die gewählte: Adressen, QR-Codes, Zahlen, Verwalten.
+        let list = order_addresses(&self.panel.addresses);
+        let chosen = list.get(pick).or(list.first());
+        let server = chosen.map(|a| {
+            format!(
+                "{}{}",
+                address_url(&self.panel.scheme, a, &self.panel.port),
+                shown.path
+            )
+        });
+        let id_q = if sel.is_empty() {
+            String::new()
+        } else {
+            format!("i={}&amp;", esc(sel))
+        };
         let chips = if list.len() > 1 {
             let links: String = list
                 .iter()
@@ -139,7 +388,7 @@ impl Panel {
                     } else {
                         ""
                     };
-                    format!("<a href=\"?a={i}\"{current}>{}</a>", esc(a))
+                    format!("<a href=\"?{id_q}a={i}\"{current}>{}</a>", esc(a))
                 })
                 .collect();
             format!("<nav class=\"chips\" aria-label=\"Adresse\">{links}</nav>")
@@ -147,16 +396,17 @@ impl Panel {
             String::new()
         };
 
-        let body = match &server {
+        let steps = match &server {
             None => "<p class=\"note\">Die Adresse dieses Rechners ist unbekannt. Trag unter <b>Konfiguration → hostnames</b> \
                      den Namen ein, unter dem du Home Assistant erreichst, und starte das Add-on neu.</p>"
                 .to_string(),
             Some(server) => {
-                let ca = format!("{server}/ca.crt");
-                let link = connect_link(server, &self.token);
-                let ca_step = if self.own_ca {
+                let root = server.strip_suffix(&shown.path).unwrap_or(server);
+                let ca = format!("{root}/ca.crt");
+                let link = connect_link(server, &shown.token);
+                let ca_step = if self.panel.own_ca {
                     format!(
-                        "<section>\n  <h2><span class=\"n\">1</span>Zertifikat <small>einmal pro Gerät</small></h2>\n  {}\n  \
+                        "<section>\n  <h3><span class=\"n\">1</span>Zertifikat <small>einmal pro Gerät</small></h3>\n  {}\n  \
                          <p>Mit der Kamera scannen und öffnen. Am iPhone danach unter <b>Einstellungen → Allgemein → Info →\n  \
                          Zertifikatsvertrauenseinstellungen</b> „Chordwright lokale CA“ einschalten.</p>\n  \
                          <p class=\"value\"><a href=\"{}\" target=\"_blank\" rel=\"noreferrer\">{}</a></p>\n</section>",
@@ -168,20 +418,178 @@ impl Panel {
                     String::new()
                 };
                 format!(
-                    "{ca_step}\n<section>\n  <h2>{}Verbinden</h2>\n  {}\n  \
+                    "{ca_step}\n<section>\n  <h3>{}Verbinden</h3>\n  {}\n  \
                      <p>Mit der Kamera scannen, oder in Chordwright unter <b>Einstellungen → Datenquelle → Server hinzufügen</b>\n  \
                      „QR-Code scannen“. Auf diesem Gerät: <a class=\"connect\" href=\"{}\" target=\"_blank\" rel=\"noreferrer\">hier öffnen</a>.</p>\n  \
                      <dl>\n    <dt>Adresse</dt><dd class=\"value\">{}</dd>\n    <dt>Token</dt><dd class=\"value\">{}</dd>\n  </dl>\n</section>",
-                    if self.own_ca { "<span class=\"n\">2</span>" } else { "" },
-                    qr_svg(&link, "QR-Code: Chordwright mit diesem Server verbinden"),
+                    if self.panel.own_ca { "<span class=\"n\">2</span>" } else { "" },
+                    qr_svg(&link, "QR-Code: Chordwright mit dieser Bibliothek verbinden"),
                     esc(&link),
                     esc(server),
-                    esc(&self.token)
+                    esc(&shown.token)
                 )
             }
         };
 
-        format!("{HEAD}<h1>Chordwright Data</h1>\n{chips}\n<div class=\"steps\">\n{body}\n</div>\n</main>\n</body>\n</html>\n")
+        let figures = match &shown.stats {
+            None => String::new(),
+            Some(st) => {
+                let backup = match st.last_backup {
+                    Some(at) => format!("{} · letzte {}", st.backups, ago(at, now)),
+                    None => "noch keine".into(),
+                };
+                let folder = shown
+                    .entry
+                    .map(|e| e.folder.as_str())
+                    .unwrap_or(&self.panel.folder);
+                let tiles = [
+                    ("Songs", st.songs.to_string(), ""),
+                    ("Sets", st.sets.to_string(), ""),
+                    ("Geräte jetzt", st.devices.to_string(), "Apps, die gerade mit dieser Bibliothek verbunden sind"),
+                    ("Größe", size(st.bytes), "Songs, Abläufe und Einstellungen, ohne Sicherungen"),
+                ]
+                .iter()
+                .map(|(k, v, title)| {
+                    let title = if title.is_empty() {
+                        String::new()
+                    } else {
+                        format!(" title=\"{}\"", esc(title))
+                    };
+                    format!("<div class=\"tile\"{title}><span class=\"big\">{}</span><span class=\"muted\">{k}</span></div>", esc(v))
+                })
+                .collect::<String>();
+                let changes = if st.changes.is_empty() {
+                    "<p class=\"muted\">Noch keine Änderung.</p>".to_string()
+                } else {
+                    let rows: String = st
+                        .changes
+                        .iter()
+                        .map(|c| {
+                            format!(
+                                "<li><span class=\"what\">{}</span> <span class=\"muted\">{}{} · {}</span></li>",
+                                esc(&c.label),
+                                action_label(&c.action),
+                                c.by.as_deref()
+                                    .map(|b| format!(" von {}", esc(b)))
+                                    .unwrap_or_default(),
+                                ago(c.at, now)
+                            )
+                        })
+                        .collect();
+                    format!("<ul class=\"rows\">{rows}</ul>")
+                };
+                let rooms = if st.rooms.is_empty() {
+                    String::new()
+                } else {
+                    let rows: String = st
+                        .rooms
+                        .iter()
+                        .map(|r| {
+                            format!(
+                                "<li><span class=\"what\">{}</span> <span class=\"muted\">{} · {}</span></li>",
+                                esc(&r.room),
+                                r.leader
+                                    .as_deref()
+                                    .map(|l| format!("leitet: {}", esc(l)))
+                                    .unwrap_or_else(|| "niemand leitet".into()),
+                                plural(r.followers as u64, "folgt", "folgen")
+                            )
+                        })
+                        .collect();
+                    format!("<h3>Gemeinsame Bühne</h3>\n<ul class=\"rows\">{rows}</ul>")
+                };
+                format!(
+                    "<div class=\"tiles\">{tiles}</div>\n<dl class=\"facts\">\
+                     <dt>Ordner</dt><dd class=\"value\">{}</dd>\
+                     <dt>Sicherungen</dt><dd>{}</dd></dl>\n\
+                     <h3>Letzte Änderungen</h3>\n{changes}\n{rooms}",
+                    esc(&self.folder_label(&st.dir, folder)),
+                    esc(&backup)
+                )
+            }
+        };
+
+        let manage = match shown.entry {
+            None => "<p class=\"muted\">Token, Ordner und Sicherungen der Hauptbibliothek stellst du unter <b>Konfiguration</b> ein.</p>".to_string(),
+            Some(e) => {
+                let id = esc(&e.id);
+                let csrf = self.csrf();
+                format!(
+                    "<form class=\"row\" method=\"post\" action=\"./\">{csrf}<input type=\"hidden\" name=\"do\" value=\"rename\"><input type=\"hidden\" name=\"id\" value=\"{id}\">\
+                     <input name=\"name\" required maxlength=\"60\" value=\"{}\" aria-label=\"Name\"><button>Umbenennen</button></form>\n\
+                     <div class=\"row\">\
+                     <form method=\"post\" action=\"./\" onsubmit=\"return confirm('Neuer Token? Jedes Gerät muss sich danach neu verbinden.')\">{csrf}<input type=\"hidden\" name=\"do\" value=\"token\"><input type=\"hidden\" name=\"id\" value=\"{id}\">\
+                     <button class=\"quiet\" title=\"Geräte mit dem alten Token kommen nicht mehr hinein\">Neuer Token</button></form>\
+                     <form method=\"post\" action=\"./\" onsubmit=\"return confirm('Entfernen? Die Bibliothek ist dann nicht mehr erreichbar. Der Ordner mit den Songs bleibt.')\">{csrf}<input type=\"hidden\" name=\"do\" value=\"remove\"><input type=\"hidden\" name=\"id\" value=\"{id}\">\
+                     <button class=\"quiet danger\" title=\"Der Ordner bleibt in share; dieselbe wieder anlegen holt ihn zurück\">Entfernen</button></form>\
+                     </div>",
+                    esc(&e.name)
+                )
+            }
+        };
+
+        let banner = match (error, message) {
+            (Some(e), _) => format!("<p class=\"banner error\" role=\"alert\">{}</p>\n", esc(e)),
+            (None, Some(m)) => format!("<p class=\"banner\" role=\"status\">{}</p>\n", esc(m)),
+            _ => String::new(),
+        };
+        let sub = format!(
+            "Version {} · {} · {}",
+            env!("CARGO_PKG_VERSION"),
+            since(self.hub.started(), now),
+            plural(devices as u64, "Gerät verbunden", "Geräte verbunden")
+        );
+
+        format!(
+            "{HEAD}<header><h1>Chordwright Data</h1><p class=\"muted\">{sub}</p></header>\n{banner}\
+             <h2>Bibliotheken</h2>\n<div class=\"libs\">\n{cards}{create}\n</div>\n\
+             <article>\n<h2>{}</h2>\n{chips}\n<div class=\"steps\">\n{steps}\n</div>\n\
+             <h3>Zahlen</h3>\n{figures}\n<h3>Verwalten</h3>\n{manage}\n</article>\n</main>\n</body>\n</html>\n",
+            esc(&shown.name)
+        )
+    }
+
+    fn csrf(&self) -> String {
+        format!(
+            "<input type=\"hidden\" name=\"csrf\" value=\"{}\">",
+            esc(&self.secret)
+        )
+    }
+
+    /// Ein abgeschicktes Formular: wohin danach (`?i=…&m=…`), oder was schiefging.
+    fn act(&self, body: &str) -> Result<String, (String, String)> {
+        let field = |name: &str| form_field(body, name).unwrap_or_default();
+        let id = field("id");
+        if field("csrf") != self.secret {
+            return Err((
+                id,
+                "Das Formular ist abgelaufen. Lade die Seite neu und versuch es noch einmal."
+                    .into(),
+            ));
+        }
+        let fail = |e: String| (id.clone(), e);
+        match field("do").as_str() {
+            "create" => {
+                let entry = self
+                    .registry
+                    .create(&field("name"))
+                    .map_err(|e| (String::new(), e))?;
+                Ok(format!("?i={}&m=created", entry.id))
+            }
+            "rename" => {
+                self.registry.rename(&id, &field("name")).map_err(fail)?;
+                Ok(format!("?i={id}&m=renamed"))
+            }
+            "token" => {
+                self.registry.new_token(&id).map_err(fail)?;
+                Ok(format!("?i={id}&m=token"))
+            }
+            "remove" => {
+                self.registry.remove(&id).map_err(fail)?;
+                Ok("?m=removed".into())
+            }
+            _ => Err((id, "Unbekannte Aktion.".into())),
+        }
     }
 }
 
@@ -192,27 +600,58 @@ const HEAD: &str = r#"<!doctype html>
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Chordwright Data</title>
 <style>
-  :root { color-scheme: light dark; --fg: #1c1c1e; --muted: #6b6b70; --line: #d9d9de; --accent: #0a7c6b; --bg: #fafafa; }
-  @media (prefers-color-scheme: dark) { :root { --fg: #ececf0; --muted: #a0a0a8; --line: #3a3a40; --accent: #4cc7b2; --bg: #111214; } }
+  :root { color-scheme: light dark; --fg: #1c1c1e; --muted: #6b6b70; --line: #d9d9de; --accent: #0a7c6b; --bg: #fafafa; --card: #fff; --danger: #b3261e; }
+  @media (prefers-color-scheme: dark) { :root { --fg: #ececf0; --muted: #a0a0a8; --line: #3a3a40; --accent: #4cc7b2; --bg: #111214; --card: #1a1b1e; --danger: #f2b8b5; } }
+  * { box-sizing: border-box; }
   body { margin: 0; padding: 24px 16px; background: var(--bg); color: var(--fg); font: 15px/1.45 system-ui, sans-serif; }
-  main { max-width: 760px; margin: 0 auto; }
-  h1 { font-size: 20px; margin: 0 0 16px; }
+  main { max-width: 860px; margin: 0 auto; }
+  header { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 16px; margin: 0 0 16px; }
+  h1 { font-size: 20px; margin: 0; }
+  header p { margin: 0; font-size: 13px; }
+  h2 { font-size: 17px; margin: 24px 0 12px; }
+  h3 { font-size: 15px; margin: 20px 0 10px; display: flex; align-items: center; gap: 8px; }
+  h3 small { color: var(--muted); font-weight: normal; }
+  .muted { color: var(--muted); }
+  .libs { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 12px; }
+  .lib { display: flex; flex-direction: column; gap: 2px; min-width: 0; padding: 12px 14px; border: 1px solid var(--line); border-radius: 12px; background: var(--card); color: var(--fg); text-decoration: none; }
+  .lib > * { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+  .lib[aria-current] { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); }
+  .lib .nums { font-size: 14px; }
+  .lib .muted { font-size: 13px; }
+  .lib.new { gap: 8px; }
+  .path { font-family: ui-monospace, monospace; font-size: 12px !important; }
+  .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: var(--accent); margin-right: 6px; vertical-align: middle; }
+  article { margin-top: 8px; }
   .steps { display: flex; flex-wrap: wrap; gap: 24px; }
   section { flex: 1 1 280px; min-width: 0; }
-  h2 { font-size: 16px; margin: 0 0 12px; display: flex; align-items: center; gap: 8px; }
-  h2 small { color: var(--muted); font-weight: normal; }
   .n { display: inline-grid; place-items: center; width: 22px; height: 22px; border-radius: 50%; background: var(--accent); color: var(--bg); font-size: 13px; }
   .qr { display: block; width: 100%; max-width: 260px; height: auto; border-radius: 8px; }
   p { margin: 12px 0; }
   dl { display: grid; grid-template-columns: auto 1fr; gap: 4px 12px; margin: 12px 0; }
   dt { color: var(--muted); }
-  dd { margin: 0; }
+  dd { margin: 0; min-width: 0; }
   .value { font-family: ui-monospace, monospace; font-size: 13px; overflow-wrap: anywhere; }
   a { color: var(--accent); }
   .chips { display: flex; flex-wrap: wrap; gap: 8px; margin: 0 0 20px; }
   .chips a { padding: 6px 12px; border: 1px solid var(--line); border-radius: 999px; text-decoration: none; color: var(--fg); font-size: 13px; }
   .chips a[aria-current] { border-color: var(--accent); color: var(--accent); }
+  .tiles { display: grid; grid-template-columns: repeat(auto-fill, minmax(130px, 1fr)); gap: 12px; }
+  .tile { display: flex; flex-direction: column; padding: 10px 14px; border: 1px solid var(--line); border-radius: 12px; background: var(--card); }
+  .big { font-size: 22px; font-weight: 600; font-variant-numeric: tabular-nums; }
+  .rows { list-style: none; margin: 0; padding: 0; }
+  .rows li { padding: 6px 0; border-bottom: 1px solid var(--line); overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+  .rows li:last-child { border-bottom: 0; }
+  .what { font-weight: 500; }
   .note { color: var(--muted); }
+  form { margin: 0; }
+  .row { display: flex; flex-wrap: wrap; gap: 8px; margin: 0 0 10px; }
+  .row input { flex: 1 1 200px; min-width: 0; }
+  input { font: inherit; padding: 8px 12px; min-height: 36px; border: 1px solid var(--line); border-radius: 8px; background: var(--bg); color: var(--fg); }
+  button { font: inherit; padding: 8px 16px; min-height: 36px; border: 1px solid var(--accent); border-radius: 999px; background: var(--accent); color: var(--bg); cursor: pointer; }
+  button.quiet { background: transparent; color: var(--fg); border-color: var(--line); }
+  button.danger { color: var(--danger); }
+  .banner { padding: 10px 14px; border-radius: 12px; border: 1px solid var(--accent); }
+  .banner.error { border-color: var(--danger); color: var(--danger); }
 </style>
 </head>
 <body>
@@ -231,21 +670,49 @@ fn allowed(ip: IpAddr) -> bool {
     ip.is_loopback() || ip == IpAddr::from([172, 30, 32, 2])
 }
 
-fn answer(mut stream: TcpStream, panel: &Panel) {
-    let _ = stream.set_read_timeout(Some(Duration::from_secs(5)));
-    let mut head = Vec::new();
+/// Kopf und, bei einem POST, der Körper der Anfrage — höchstens 16 KB.
+fn read_request(stream: &mut TcpStream) -> (String, String) {
+    const LIMIT: usize = 16 * 1024;
+    let mut raw = Vec::new();
     let mut buf = [0u8; 1024];
-    while !head.windows(4).any(|w| w == b"\r\n\r\n") && head.len() < 16 * 1024 {
+    let split = loop {
+        if let Some(at) = raw.windows(4).position(|w| w == b"\r\n\r\n") {
+            break at;
+        }
+        if raw.len() >= LIMIT {
+            break raw.len();
+        }
+        match stream.read(&mut buf) {
+            Ok(0) | Err(_) => break raw.len(),
+            Ok(n) => raw.extend_from_slice(&buf[..n]),
+        }
+    };
+    let head = String::from_utf8_lossy(&raw[..split]).into_owned();
+    let length = head
+        .lines()
+        .find_map(|l| {
+            let (k, v) = l.split_once(':')?;
+            k.trim()
+                .eq_ignore_ascii_case("content-length")
+                .then(|| v.trim().parse::<usize>().ok())?
+        })
+        .unwrap_or(0)
+        .min(LIMIT);
+    let mut body = raw.get(split + 4..).map(<[u8]>::to_vec).unwrap_or_default();
+    while body.len() < length {
         match stream.read(&mut buf) {
             Ok(0) | Err(_) => break,
-            Ok(n) => head.extend_from_slice(&buf[..n]),
+            Ok(n) => body.extend_from_slice(&buf[..n]),
         }
     }
-    let line = String::from_utf8_lossy(&head)
-        .lines()
-        .next()
-        .unwrap_or_default()
-        .to_string();
+    body.truncate(length);
+    (head, String::from_utf8_lossy(&body).into_owned())
+}
+
+fn answer(mut stream: TcpStream, ui: &Ui) {
+    let _ = stream.set_read_timeout(Some(Duration::from_secs(5)));
+    let (head, body) = read_request(&mut stream);
+    let line = head.lines().next().unwrap_or_default().to_string();
     let mut words = line.split(' ');
     let (method, target) = (
         words.next().unwrap_or_default(),
@@ -259,16 +726,41 @@ fn answer(mut stream: TcpStream, panel: &Panel) {
             body.len()
         );
     };
+    let html = "content-type: text/html; charset=utf-8\r\ncache-control: no-store\r\nreferrer-policy: no-referrer\r\n";
     if !stream.peer_addr().is_ok_and(|a| allowed(a.ip())) {
         return respond(&mut stream, "403 Forbidden", "", "");
     }
-    if method != "GET" || path != "/" {
+    if path != "/" {
         return respond(&mut stream, "404 Not Found", "", "");
     }
+    if method == "POST" {
+        return match ui.act(&body) {
+            // Relativ: unter Ingress liegt die Seite unter einem Pfad, den nur Home Assistant kennt.
+            Ok(to) => respond(
+                &mut stream,
+                "303 See Other",
+                &format!("location: {to}\r\ncache-control: no-store\r\n"),
+                "",
+            ),
+            Err((id, e)) => respond(
+                &mut stream,
+                "400 Bad Request",
+                html,
+                &ui.page(&id, 0, None, Some(&e)),
+            ),
+        };
+    }
+    if method != "GET" {
+        return respond(&mut stream, "405 Method Not Allowed", "", "");
+    }
+    let param = |name: &str| {
+        query
+            .split('&')
+            .find_map(|p| p.strip_prefix(name)?.strip_prefix('='))
+            .map(form_decode)
+    };
     // `parseInt(a) || 0`: führende Ziffern zählen, alles andere ist die erste Adresse.
-    let pick = query
-        .split('&')
-        .find_map(|p| p.strip_prefix("a="))
+    let pick = param("a")
         .map(|v| {
             v.chars()
                 .take_while(char::is_ascii_digit)
@@ -276,21 +768,24 @@ fn answer(mut stream: TcpStream, panel: &Panel) {
         })
         .and_then(|d| d.parse::<usize>().ok())
         .unwrap_or(0);
+    let id = param("i").unwrap_or_default();
+    let message = param("m").and_then(|m| notice(&m));
     respond(
         &mut stream,
         "200 OK",
-        "content-type: text/html; charset=utf-8\r\ncache-control: no-store\r\nreferrer-policy: no-referrer\r\n",
-        &panel.page(pick),
+        html,
+        &ui.page(&id, pick, message, None),
     );
 }
 
 /// Startet die Web-UI auf `port`, in Threads neben dem Server.
-pub fn start(port: u16, panel: Panel) -> std::io::Result<()> {
+pub fn start(port: u16, ui: Ui) -> std::io::Result<()> {
     let listener = TcpListener::bind(("0.0.0.0", port))?;
+    let ui = Arc::new(ui);
     std::thread::spawn(move || {
         for stream in listener.incoming().flatten() {
-            let panel = panel.clone();
-            std::thread::spawn(move || answer(stream, &panel));
+            let ui = ui.clone();
+            std::thread::spawn(move || answer(stream, &ui));
         }
     });
     Ok(())
@@ -315,5 +810,20 @@ mod tests {
         assert_eq!(ordered, ["10.0.0.9", "ha.local", "fd00::5"]);
         assert!(allowed("::ffff:172.30.32.2".parse().unwrap()));
         assert!(!allowed("192.168.1.2".parse().unwrap()));
+    }
+
+    #[test]
+    fn forms_and_figures() {
+        assert_eq!(form_decode("Die+Gro%C3%9Fen%21"), "Die Großen!");
+        assert_eq!(form_decode("50%"), "50%");
+        assert_eq!(
+            form_field("do=create&name=Chor+2", "name").as_deref(),
+            Some("Chor 2")
+        );
+        assert_eq!(ago(0, 30_000), "gerade eben");
+        assert_eq!(ago(0, 5 * 60_000), "vor 5 Min.");
+        assert_eq!(ago(0, 3 * 86_400_000), "vor 3 Tagen");
+        assert_eq!(size(1_300_000), "1,2 MB");
+        assert_eq!(size(2048), "2 KB");
     }
 }

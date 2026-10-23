@@ -287,6 +287,13 @@ impl Backups {
         })
     }
 
+    /// Songs, sets and bytes of the live library, as a snapshot would count them.
+    pub fn tally(&self) -> (u64, u64, u64) {
+        self.survey(&self.root)
+            .map(|s| (s.songs, s.sets, s.bytes))
+            .unwrap_or_default()
+    }
+
     /// A snapshot now, whatever changed or did not.
     pub fn create(&self, reason: &str) -> io::Result<Entry> {
         let _serial = self.lock();
