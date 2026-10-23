@@ -824,6 +824,10 @@ test('addon: the web UI adds libraries under /i/<id>, each with its own token, a
     // Across a restart it is still there.
     await server.stop();
     server = await launch([ADDON_START], { env, port, scheme: 'https' });
+    // /api/health answers before the further libraries are added; the log line comes once they are.
+    for (let i = 0; i < 100 && !/Bibliothek „Die Bläser“/.test(server.output()); i++) {
+      await new Promise((r) => setTimeout(r, 50));
+    }
     assert.match(server.output(), /Bibliothek „Die Bläser“/);
     assert.equal((await get(`${base}/api/library`, { authorization: `Bearer ${token}` })).status, 200);
 
