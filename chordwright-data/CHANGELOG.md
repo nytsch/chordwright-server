@@ -4,6 +4,7 @@
 
 - Mehrere Bibliotheken: In der Web-UI legst du weitere an, jede mit eigenem Ordner (`share/chordwright-<name>`), eigenem Token, eigenen Sicherungen und eigener Bühne, erreichbar unter derselben Adresse mit `/i/<name>`. Umbenennen, neuer Token und Entfernen (der Ordner bleibt) gehen dort auch. Für die App ändert sich nichts: Sie verbindet sich per QR-Code wie bisher.
 - Die Web-UI zeigt jetzt mehr als den QR-Code: jede Bibliothek mit Songs, Sets, gerade verbundenen Geräten und letzter Änderung; zur gewählten Größe, Sicherungen, die letzten Änderungen mit Namen und offene Bühnen.
+- Das Add-on trägt das Chordwright-Zeichen als Icon und Logo im Add-on-Store.
 
 ## 2.0.0
 
