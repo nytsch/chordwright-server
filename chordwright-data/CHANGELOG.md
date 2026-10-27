@@ -1,6 +1,6 @@
 # Changelog
 
-## Noch nicht veröffentlicht
+## 2.3.1
 
 - Web-UI unter Home Assistant: Nach **Aufnehmen**, **Speichern**, **Verlängern** und beim Tipp auf einen Musiker blieb die Seite schwarz, vor allem in der App am Handy. Der Sprung zum Abschnitt Band (`#band`) scrollte auch die Seite von Home Assistant um den Iframe herum mit. Jetzt scrollt nur noch die Web-UI selbst.
 
