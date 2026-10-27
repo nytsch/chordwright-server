@@ -1,6 +1,6 @@
 # Changelog
 
-## Unveröffentlicht
+## 2.2.0
 
 - Die Band: In der Web-UI bekommt jede Bibliothek eine Liste ihrer Musiker, jeder mit Rollen (D, P, A, E, B, S) und eigenem Zugang samt QR-Code, befristet (1 Tag bis 30 Tage) oder bis auf Widerruf. Ein Musiker liest Songs, Sets und Abläufe, spielt auf der gemeinsamen Bühne mit und trägt ein, wann er kann — sonst schreibt er nichts. Verlängern behält den Zugang, Von der Liste nehmen sperrt ihn sofort.
 - Von unterwegs über einen Tunnel: Mit `tunnel` hört der Server zusätzlich ohne https auf Port 4175, etwa für das Cloudflared-Add-on; `public_url` ist die Adresse von draußen und steht in den QR-Codes der Musiker. Anleitung in der Dokumentation.
