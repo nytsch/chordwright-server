@@ -44,7 +44,7 @@ checksum = "4e7648175b45a9a48536d676f68d918270699102aa8dab5496df06904c914600"
 
 [[package]]
 name = "chordwright-server"
-version = "2.2.0"
+version = "2.2.1"
 dependencies = [
  "base64",
  "bytes",
