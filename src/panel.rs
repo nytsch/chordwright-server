@@ -17,7 +17,7 @@ use std::net::{IpAddr, TcpListener, TcpStream};
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use chordwright_server::{Hub, Member, Stats, ROLES};
+use chordwright_server::{Can, Hub, Member, Stats, ROLES};
 use qrcodegen::{QrCode, QrCodeEcc};
 
 use crate::instances::{Entry, Registry};
@@ -658,6 +658,20 @@ impl Ui {
                 })
                 .collect()
         };
+        // Was einer außer seinen Antworten schreiben darf. Sicherungen und
+        // Songs löschen bleiben beim Besitzer, gleich was hier steht.
+        let rights = |current: Can| -> String {
+            let options: String = Can::ALL
+                .iter()
+                .map(|c| {
+                    let on = if *c == current { " selected" } else { "" };
+                    format!("<option value=\"{}\"{on}>{}</option>", c.id(), c.label())
+                })
+                .collect();
+            format!(
+                "<select name=\"can\" aria-label=\"Darf\" title=\"Sicherungen und Songs löschen bleiben bei dir\">{options}</select>"
+            )
+        };
         let state = |m: &Member| match m.until {
             _ if m.expired(now) => "abgelaufen".to_string(),
             None => "bis auf Widerruf".to_string(),
@@ -673,8 +687,13 @@ impl Ui {
                     .iter()
                     .map(|l| format!("<span class=\"letter\">{}</span>", esc(l)))
                     .collect();
+                let can = if m.can.is_read() {
+                    String::new()
+                } else {
+                    format!(" · {}", m.can.label())
+                };
                 format!(
-                    "<li><a class=\"who\" href=\"?i={id}&amp;p={}#band\"{current}>{}</a> {letters} <span class=\"muted\">· {}</span></li>",
+                    "<li><a class=\"who\" href=\"?i={id}&amp;p={}#band\"{current}>{}</a> {letters} <span class=\"muted\">· {}{can}</span></li>",
                     esc(&m.id),
                     esc(&m.name),
                     state(m)
@@ -682,7 +701,7 @@ impl Ui {
             })
             .collect();
         let list = if members.is_empty() {
-            "<p class=\"muted\">Jeder Musiker bekommt einen eigenen Zugang: Songs, Sets und Abläufe lesen, der Bühne folgen und eintragen, wann er kann — sonst nichts.</p>".to_string()
+            "<p class=\"muted\">Jeder Musiker bekommt einen eigenen Zugang: Songs, Sets und Abläufe lesen, der Bühne folgen und eintragen, wann er kann. Ob er auch Sets oder Songs bearbeiten darf, stellst du je Musiker ein.</p>".to_string()
         } else {
             format!("<ul class=\"rows\">{rows}</ul>")
         };
@@ -690,8 +709,9 @@ impl Ui {
             "<form class=\"row\" method=\"post\" action=\"./\">{csrf}<input type=\"hidden\" name=\"do\" value=\"member-add\"><input type=\"hidden\" name=\"id\" value=\"{id}\">\
              <input name=\"name\" required maxlength=\"60\" placeholder=\"Name\" aria-label=\"Name\" autocomplete=\"off\">\
              <span class=\"roles\" role=\"group\" aria-label=\"Rollen\">{}</span>\
-             <select name=\"days\" aria-label=\"Wie lange\">{}</select><button>Aufnehmen</button></form>",
+             {}<select name=\"days\" aria-label=\"Wie lange\">{}</select><button>Aufnehmen</button></form>",
             boxes(&[]),
+            rights(Can::Read),
             choices(30)
         );
         let Some(m) = members.iter().find(|m| m.id == person) else {
@@ -734,7 +754,7 @@ impl Ui {
             "<section>\n  <p><b>{}</b> <span class=\"muted\">· {}</span></p>\n  \
              <form class=\"row\" method=\"post\" action=\"./\">{hidden}<input type=\"hidden\" name=\"do\" value=\"member-edit\">\
              <input name=\"name\" required maxlength=\"60\" value=\"{}\" aria-label=\"Name\">\
-             <span class=\"roles\" role=\"group\" aria-label=\"Rollen\">{}</span><button class=\"quiet\">Speichern</button></form>\n  \
+             <span class=\"roles\" role=\"group\" aria-label=\"Rollen\">{}</span>{}<button class=\"quiet\">Speichern</button></form>\n  \
              <form class=\"row\" method=\"post\" action=\"./\">{hidden}<input type=\"hidden\" name=\"do\" value=\"member-extend\">\
              <select name=\"days\" aria-label=\"Ab jetzt für\">{}</select><button class=\"quiet\" title=\"Der Token bleibt; verbundene Geräte bleiben verbunden\">Verlängern</button></form>\n  \
              <form class=\"row\" method=\"post\" action=\"./\" onsubmit=\"return confirm('Von der Liste nehmen? Mit diesem Zugang kommt niemand mehr hinein.')\">{hidden}<input type=\"hidden\" name=\"do\" value=\"member-remove\">\
@@ -743,6 +763,7 @@ impl Ui {
             state(m),
             esc(&m.name),
             boxes(&m.roles),
+            rights(m.can),
             choices(if m.until.is_none() { 0 } else { 30 })
         );
         format!("{list}\n{add}\n<div class=\"steps\">\n{code}{manage}\n</div>")
@@ -792,6 +813,7 @@ impl Ui {
                         &id,
                         &field("name"),
                         &form_fields(body, "role"),
+                        Can::parse(&field("can")),
                         days(),
                         now_ms(),
                     )
@@ -800,7 +822,13 @@ impl Ui {
             }
             "member-edit" => {
                 self.registry
-                    .edit_member(&id, &person, &field("name"), &form_fields(body, "role"))
+                    .edit_member(
+                        &id,
+                        &person,
+                        &field("name"),
+                        &form_fields(body, "role"),
+                        Can::parse(&field("can")),
+                    )
                     .map_err(fail)?;
                 Ok(format!("?i={id}&p={person}&m=saved#band"))
             }

@@ -36,14 +36,17 @@ Unter **Verwalten** benennst du eine Bibliothek um, gibst ihr einen neuen Token 
 
 ### Die Band: ein Zugang pro Musiker
 
-Deine Musiker sollen Songs, Sets und Abläufe sehen, der Bühne folgen und eintragen, an welchem Sonntag sie können, aber nichts verändern? In der Web-UI unter **Band** einen Namen eintragen, die Rollen anhaken (**D** Drum, **P** Piano, **A** A-Git, **E** E-Git, **B** Bass, **S** Singer), eine Dauer wählen (1 Tag bis bis auf Widerruf) und **Aufnehmen**. Jeder Musiker bekommt einen eigenen Zugang mit eigenem QR-Code.
+Deine Musiker sollen Songs, Sets und Abläufe sehen, der Bühne folgen und eintragen, an welchem Sonntag sie können? In der Web-UI unter **Band** einen Namen eintragen, die Rollen anhaken (**D** Drum, **P** Piano, **A** A-Git, **E** E-Git, **B** Bass, **S** Singer), wählen, was er darf, eine Dauer wählen (1 Tag bis bis auf Widerruf) und **Aufnehmen**. Jeder Musiker bekommt einen eigenen Zugang mit eigenem QR-Code.
 
 - **Lesen:** Songs, Sets, Abläufe, Einstellungen, letzte Änderungen, wer mit welchen Rollen dabei ist.
 - **Bühne:** folgen und auch leiten.
-- **Schreiben:** nur die eigenen Antworten, wann er kann (`share/chordwright/user/availability.<name>.json`), und zwar unter seinem Namen.
-- **Nicht:** Songs, Abläufe, Sets oder Einstellungen ändern, löschen, Sicherungen ansehen oder wiederherstellen. Der Server weist das ab (`403 read only`), gleich was die App versucht.
+- **Schreiben:** die eigenen Antworten, wann er kann (`share/chordwright/user/availability.<name>.json`), und zwar unter seinem Namen. Dazu, je nachdem, was du bei ihm einstellst:
+  - **Nur lesen** (Voreinstellung): sonst nichts.
+  - **Sets bearbeiten:** Sets anlegen, ändern, löschen und die Besetzung einteilen.
+  - **Songs und Sets bearbeiten:** außerdem Songs anlegen und ändern, samt Abläufen, Song-Einstellungen und den übrigen Einstellungen der Bibliothek.
+- **Bleibt bei dir:** Songs löschen, Sicherungen ansehen oder wiederherstellen, die Antworten anderer. Der Server weist das ab (`403 read only`), gleich was die App versucht.
 
-Tipp auf einen Namen zeigt seinen QR-Code. Dort änderst du Name und Rollen, **Verlängern** rückt nur das Ende (der Zugang bleibt, verbundene Geräte bleiben verbunden), **Von der Liste nehmen** sperrt ihn sofort; seine Antworten bleiben im Ordner. Ist die Zeit um, kommt niemand mehr mit diesem Zugang hinein. Dein eigener Token ändert sich dabei nie. Jede Bibliothek hat ihre eigenen Musiker.
+Tipp auf einen Namen zeigt seinen QR-Code. Dort änderst du Name, Rollen und was er darf, **Verlängern** rückt nur das Ende (der Zugang bleibt, verbundene Geräte bleiben verbunden), **Von der Liste nehmen** sperrt ihn sofort; seine Antworten bleiben im Ordner. Ist die Zeit um, kommt niemand mehr mit diesem Zugang hinein. Dein eigener Token ändert sich dabei nie. Jede Bibliothek hat ihre eigenen Musiker.
 
 Ohne Tunnel zeigt der QR-Code die Adresse im Heimnetz. Für unterwegs: [Von unterwegs](#von-unterwegs-tunnel-mit-cloudflared).
 

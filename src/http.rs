@@ -64,7 +64,7 @@ use crate::site::{self, Site};
 use crate::stage::{clean_room, Answer, Stage};
 use crate::store::{is_database, is_valid_key, key_for_path, Expect, Outcome, Store, DATABASES};
 use crate::util::{decode_component, now_ms, number, parse_query};
-use crate::{Member, ROLES};
+use crate::{drops_songs, Member, ROLES};
 
 pub type Body = BoxBody<Bytes, Infallible>;
 
@@ -182,7 +182,7 @@ fn roster(members: &[Member]) -> Value {
     Value::Array(
         members
             .iter()
-            .map(|m| json!({ "id": m.id, "name": m.name, "roles": m.roles }))
+            .map(|m| json!({ "id": m.id, "name": m.name, "roles": m.roles, "can": m.can }))
             .collect(),
     )
 }
@@ -419,7 +419,8 @@ async fn route(s: Arc<Shared>, req: Request<Incoming>) -> Response<Body> {
             health["access"] = match s.access(&given) {
                 Ok(Some(Access::Owner)) => json!("owner"),
                 Ok(Some(Access::Member(m))) => {
-                    health["member"] = json!({ "id": m.id, "name": m.name, "roles": m.roles });
+                    health["member"] =
+                        json!({ "id": m.id, "name": m.name, "roles": m.roles, "can": m.can });
                     health["until"] = json!(m.until);
                     json!("member")
                 }
@@ -541,15 +542,16 @@ async fn route(s: Arc<Shared>, req: Request<Incoming>) -> Response<Body> {
         };
     }
 
-    // A musician writes their own answers and nothing else.
+    // A musician writes their own answers, and what `can` allows.
     if let (true, Some(m)) = (
         method == Method::PUT || method == Method::DELETE,
         access.member(),
     ) {
-        if db != "user" || key != m.answers_key() {
+        if !m.may_write(&db, &key, method == Method::DELETE) {
             return read_only();
         }
     }
+    let guard_index = access.member().is_some() && db == "library" && key == "index";
     if method == Method::PUT || method == Method::DELETE {
         let stamp = format!("{db}/{key}");
         s.self_writes
@@ -572,6 +574,25 @@ async fn route(s: Arc<Shared>, req: Request<Incoming>) -> Response<Body> {
             String::new()
         };
         let (db2, key2) = (db.clone(), key.clone());
+        if guard_index {
+            let (new, db3, key3) = (value.clone(), db.clone(), key.clone());
+            let drops = blocking(&s, move |s| {
+                let before = s
+                    .store
+                    .read_versioned(&db3, &key3)
+                    .value
+                    .unwrap_or_default();
+                drops_songs(&before, &new)
+            })
+            .await;
+            if drops {
+                s.self_writes
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .remove(&stamp);
+                return read_only();
+            }
+        }
         let result = blocking(&s, move |s| {
             if put {
                 s.store.write(&db2, &key2, &value, expect)

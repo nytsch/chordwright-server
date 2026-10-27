@@ -137,8 +137,57 @@ pub const ROLES: [(&str, &str); 6] = [
     ("S", "Singer"),
 ];
 
+/// What a musician may change besides their own answers. Backups and
+/// deleting songs stay the owner's, whatever this says.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Can {
+    /// Nothing else.
+    #[default]
+    Read,
+    /// The sets and who plays in them (`user/setlists`, `user/lineups`).
+    Sets,
+    /// Also songs, their arrangements, and the rest of the user database.
+    All,
+}
+
+impl Can {
+    pub const ALL: [Can; 3] = [Can::Read, Can::Sets, Can::All];
+
+    pub fn is_read(&self) -> bool {
+        *self == Can::Read
+    }
+
+    /// As a form sends it (`read`, `sets`, `all`); anything else reads only.
+    pub fn parse(text: &str) -> Can {
+        match text {
+            "sets" => Can::Sets,
+            "all" => Can::All,
+            _ => Can::Read,
+        }
+    }
+
+    pub fn id(&self) -> &'static str {
+        match self {
+            Can::Read => "read",
+            Can::Sets => "sets",
+            Can::All => "all",
+        }
+    }
+
+    /// For the web UI.
+    pub fn label(&self) -> &'static str {
+        match self {
+            Can::Read => "Nur lesen",
+            Can::Sets => "Sets bearbeiten",
+            Can::All => "Songs und Sets bearbeiten",
+        }
+    }
+}
+
 /// A musician's way into a library: everything to read, the shared stage to
-/// lead and follow, and one record to write — their own answers.
+/// lead and follow, their own answers to write — and, as `can` says, the sets
+/// or the songs too.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, serde::Deserialize)]
 pub struct Member {
     /// Like an instance id (`is_instance_id`); names their answers' record.
@@ -151,6 +200,8 @@ pub struct Member {
     /// When the access ends, ms since the epoch; None: until taken back.
     #[serde(default)]
     pub until: Option<i64>,
+    #[serde(default, skip_serializing_if = "Can::is_read")]
+    pub can: Can,
 }
 
 impl Member {
@@ -162,6 +213,54 @@ impl Member {
     pub fn answers_key(&self) -> String {
         format!("availability.{}", self.id)
     }
+
+    /// Whether they may write (`remove`: delete) `db/key`. Another musician's
+    /// answers are never theirs; in the library nothing goes away — an index
+    /// that drops a song is caught where the write happens (`drops_songs`).
+    pub fn may_write(&self, db: &str, key: &str, remove: bool) -> bool {
+        if db == "user" && key == self.answers_key() {
+            return true;
+        }
+        match (self.can, db) {
+            (Can::Read, _) => false,
+            (_, "user") if key.starts_with("availability.") => false,
+            (Can::Sets, "user") => key == "setlists" || key == "lineups",
+            (Can::All, "user") => true,
+            (Can::All, "library") => !remove,
+            _ => false,
+        }
+    }
+}
+
+/// Whether a new song index leaves out a song the old one had — that is how
+/// the app deletes one, and deleting songs stays the owner's. Songs are told
+/// apart by `chordProId`, wherever in the value they sit.
+pub fn drops_songs(old: &str, new: &str) -> bool {
+    fn ids(text: &str) -> std::collections::HashSet<String> {
+        fn walk(v: &serde_json::Value, out: &mut std::collections::HashSet<String>) {
+            match v {
+                serde_json::Value::Object(map) => {
+                    for (k, v) in map {
+                        match (k.as_str(), v) {
+                            ("chordProId", serde_json::Value::String(id)) => {
+                                out.insert(id.clone());
+                            }
+                            _ => walk(v, out),
+                        }
+                    }
+                }
+                serde_json::Value::Array(items) => items.iter().for_each(|v| walk(v, out)),
+                _ => {}
+            }
+        }
+        let mut out = std::collections::HashSet::new();
+        if let Ok(v) = serde_json::from_str::<serde_json::Value>(text) {
+            walk(&v, &mut out);
+        }
+        out
+    }
+    let now = ids(new);
+    ids(old).iter().any(|id| !now.contains(id))
 }
 
 /// Where other devices reach a server that listens beyond this machine.

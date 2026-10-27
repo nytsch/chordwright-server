@@ -1,5 +1,9 @@
 # Changelog
 
+## 2.3.0
+
+- Was ein Musiker darf, stellst du je Musiker ein: **Nur lesen** (wie bisher), **Sets bearbeiten** (Sets und Besetzung) oder **Songs und Sets bearbeiten** (auch Songs und Abläufe). Songs löschen und Sicherungen bleiben bei dir. `/api/health` und `/api/band` nennen es als `can`.
+
 ## 2.2.1
 
 - `public_url` nimmt auch einen bloßen Namen (`band.example.org`, wie bei Cloudflare eingetragen) und setzt `https://` davor; bisher galt er stillschweigend nicht, und die QR-Codes der Musiker zeigten nur Adressen im Heimnetz.

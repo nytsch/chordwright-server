@@ -5,7 +5,7 @@
 use std::io::{Read, Write};
 use std::net::TcpStream;
 
-use chordwright_server::{Library, Member, Options, Server};
+use chordwright_server::{Can, Library, Member, Options, Server};
 
 fn request(port: u16, token: &str, method: &str, path: &str, body: &str) -> String {
     let mut stream = TcpStream::connect(("127.0.0.1", port)).unwrap();
@@ -38,6 +38,7 @@ fn member(id: &str, name: &str, token: &str, roles: &[&str], until: Option<i64>)
         token: token.into(),
         roles: roles.iter().map(|r| r.to_string()).collect(),
         until,
+        can: Default::default(),
     }
 }
 
@@ -143,7 +144,9 @@ fn musicians_read_play_along_and_write_only_their_answers() {
     assert_eq!(status(&band), "200", "{band}");
     assert!(band.contains("\"me\":\"lea\""), "{band}");
     assert!(
-        band.contains("{\"id\":\"niko\",\"name\":\"Niko\",\"roles\":[\"A\",\"S\"]}"),
+        band.contains(
+            "{\"id\":\"niko\",\"name\":\"Niko\",\"roles\":[\"A\",\"S\"],\"can\":\"read\"}"
+        ),
         "{band}"
     );
     assert!(
@@ -219,6 +222,130 @@ fn musicians_read_play_along_and_write_only_their_answers() {
         "{}",
     );
     assert_eq!(status(&own), "204", "{own}");
+
+    drop(server);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn what_a_musician_may_change_beyond_their_answers() {
+    let dir = std::env::temp_dir().join(format!("cw-members-can-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let with = |m: Member, can: Can| Member { can, ..m };
+    let server = Server::start(Options {
+        dir: dir.join("main"),
+        token: "owner".into(),
+        members: vec![
+            with(member("sam", "Sam", "sets-token", &["D"], None), Can::Sets),
+            with(member("ali", "Ali", "all-token", &["P"], None), Can::All),
+        ],
+        port: 0,
+        ..Options::default()
+    })
+    .unwrap();
+    let port = server.ready().port;
+    let song = |text: &str| format!("{{\"v\":1,\"data\":{{\"text\":\"{text}\"}}}}");
+    let index = |ids: &[&str]| {
+        let songs: Vec<String> = ids
+            .iter()
+            .map(|id| format!("{{\"id\":\"{id}\",\"chordProId\":\"{id}\"}}"))
+            .collect();
+        format!("{{\"v\":1,\"data\":[{}]}}", songs.join(","))
+    };
+    let ok = |token: &str, method: &str, path: &str, body: &str| {
+        let answer = request(port, token, method, path, body);
+        assert_eq!(status(&answer), "204", "{token} {method} {path}: {answer}");
+    };
+    let refused = |token: &str, method: &str, path: &str, body: &str| {
+        let answer = request(port, token, method, path, body);
+        assert_eq!(status(&answer), "403", "{token} {method} {path}: {answer}");
+    };
+    ok(
+        "owner",
+        "PUT",
+        "/api/library/record/doc.a",
+        &song("{title: A}"),
+    );
+    ok(
+        "owner",
+        "PUT",
+        "/api/library/record/doc.b",
+        &song("{title: B}"),
+    );
+    ok(
+        "owner",
+        "PUT",
+        "/api/library/record/index",
+        &index(&["a", "b"]),
+    );
+
+    // Sets: the sets and who plays in them, nothing of the songs.
+    ok("sets-token", "PUT", "/api/user/record/setlists", "[]");
+    ok("sets-token", "PUT", "/api/user/record/lineups", "{}");
+    refused("sets-token", "PUT", "/api/user/record/songSettings", "{}");
+    refused("sets-token", "PUT", "/api/library/record/doc.a", &song("x"));
+    refused(
+        "sets-token",
+        "PUT",
+        "/api/user/record/availability.ali",
+        "{}",
+    );
+
+    // All: songs and arrangements too — but no song goes away, and no backup.
+    ok(
+        "all-token",
+        "PUT",
+        "/api/library/record/doc.a",
+        &song("{title: A2}"),
+    );
+    ok(
+        "all-token",
+        "PUT",
+        "/api/library/record/doc.c",
+        &song("{title: C}"),
+    );
+    ok(
+        "all-token",
+        "PUT",
+        "/api/library/record/index",
+        &index(&["a", "b", "c"]),
+    );
+    ok("all-token", "PUT", "/api/user/record/songSettings", "{}");
+    refused(
+        "all-token",
+        "PUT",
+        "/api/library/record/index",
+        &index(&["a", "c"]),
+    );
+    refused("all-token", "DELETE", "/api/library/record/doc.b", "");
+    refused(
+        "all-token",
+        "PUT",
+        "/api/user/record/availability.sam",
+        "{}",
+    );
+    refused("all-token", "GET", "/api/backups", "");
+    let index_now = request(port, "owner", "GET", "/api/library/record/index", "");
+    assert!(index_now.contains("\\\"b\\\""), "{index_now}");
+
+    // The owner still deletes.
+    ok(
+        "owner",
+        "PUT",
+        "/api/library/record/index",
+        &index(&["a", "c"]),
+    );
+    ok("owner", "DELETE", "/api/library/record/doc.b", "");
+
+    // What the app learns about itself.
+    let health = request(port, "sets-token", "GET", "/api/health", "");
+    assert!(health.contains("\"can\":\"sets\""), "{health}");
+    let band = request(port, "owner", "GET", "/api/band", "");
+    assert!(band.contains("\"can\":\"all\""), "{band}");
+    assert!(
+        band.contains("\"can\":\"read\"") || band.contains("\"can\":\"sets\""),
+        "{band}"
+    );
 
     drop(server);
     let _ = std::fs::remove_dir_all(&dir);
