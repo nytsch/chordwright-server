@@ -1,5 +1,11 @@
 # Changelog
 
+## Unveröffentlicht
+
+- Die Band: In der Web-UI bekommt jede Bibliothek eine Liste ihrer Musiker, jeder mit Rollen (D, P, A, E, B, S) und eigenem Zugang samt QR-Code, befristet (1 Tag bis 30 Tage) oder bis auf Widerruf. Ein Musiker liest Songs, Sets und Abläufe, spielt auf der gemeinsamen Bühne mit und trägt ein, wann er kann — sonst schreibt er nichts. Verlängern behält den Zugang, Von der Liste nehmen sperrt ihn sofort.
+- Von unterwegs über einen Tunnel: Mit `tunnel` hört der Server zusätzlich ohne https auf Port 4175, etwa für das Cloudflared-Add-on; `public_url` ist die Adresse von draußen und steht in den QR-Codes der Musiker. Anleitung in der Dokumentation.
+- `/api/health` sagt mit einem Token, was er darf (`access`: `owner`, `member`, `expired`, `none`; beim Musiker `member` und `until`), `/api/band` nennt die Musiker mit ihren Rollen.
+
 ## 2.1.0
 
 - Mehrere Bibliotheken: In der Web-UI legst du weitere an, jede mit eigenem Ordner (`share/chordwright-<name>`), eigenem Token, eigenen Sicherungen und eigener Bühne, erreichbar unter derselben Adresse mit `/i/<name>`. Umbenennen, neuer Token und Entfernen (der Ordner bleibt) gehen dort auch. Für die App ändert sich nichts: Sie verbindet sich per QR-Code wie bisher.

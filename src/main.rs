@@ -14,7 +14,7 @@ use std::io::Read;
 use std::path::PathBuf;
 use std::sync::{mpsc, Arc};
 
-use chordwright_server::{new_pairing_code, Options, Server, Site};
+use chordwright_server::{new_pairing_code, Member, Options, Server, Site};
 
 struct Args {
     options: Options,
@@ -74,6 +74,17 @@ fn parse_args(argv: &[String]) -> Args {
             plain_port: get("plain-port").map(|p| p.trim().parse::<u16>().unwrap_or(0)),
             site: get("site").map(Site::dir),
             pairing: get("pairing").map(|c| if c == "auto" { new_pairing_code() } else { c }),
+            members: get("members")
+                .map(|file| {
+                    std::fs::read_to_string(&file)
+                        .ok()
+                        .and_then(|t| serde_json::from_str::<Vec<Member>>(&t).ok())
+                        .unwrap_or_else(|| {
+                            eprintln!("--members {file}: no list of musicians");
+                            std::process::exit(1);
+                        })
+                })
+                .unwrap_or_default(),
             backup_every: every.unwrap_or(defaults.backup_every),
             backup_keep: keep
                 .map(|k| k.max(1.0) as usize)

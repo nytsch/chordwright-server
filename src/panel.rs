@@ -17,7 +17,7 @@ use std::net::{IpAddr, TcpListener, TcpStream};
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use chordwright_server::{Hub, Stats};
+use chordwright_server::{Hub, Member, Stats, ROLES};
 use qrcodegen::{QrCode, QrCodeEcc};
 
 use crate::instances::{Entry, Registry};
@@ -62,6 +62,16 @@ fn form_decode(s: &str) -> String {
         i += 1;
     }
     String::from_utf8_lossy(&out).into_owned()
+}
+
+/// Alle Werte eines Feldes, etwa angehakte Kästchen gleichen Namens.
+fn form_fields(body: &str, name: &str) -> Vec<String> {
+    body.split('&')
+        .filter_map(|pair| {
+            let (k, v) = pair.split_once('=').unwrap_or((pair, ""));
+            (form_decode(k) == name).then(|| form_decode(v))
+        })
+        .collect()
 }
 
 fn form_field(body: &str, name: &str) -> Option<String> {
@@ -180,6 +190,26 @@ fn since(then: i64, now: i64) -> String {
 }
 
 /// „1,2 MB“
+/// Wie lange eine Freigabe noch gilt.
+fn left(until: i64, now: i64) -> String {
+    let s = (until - now) / 1000;
+    match s {
+        i64::MIN..=0 => "abgelaufen".into(),
+        1..3600 => format!("noch {} Min.", (s / 60).max(1)),
+        3600..172800 => format!("noch {} Std.", s / 3600),
+        _ => format!("noch {} Tage", (s + 43_200) / 86400),
+    }
+}
+
+/// Die Wahl, wie lange eine Freigabe gilt; 0 heißt bis auf Widerruf.
+const BAND_DAYS: [(u32, &str); 5] = [
+    (1, "1 Tag"),
+    (3, "3 Tage"),
+    (7, "1 Woche"),
+    (30, "30 Tage"),
+    (0, "bis auf Widerruf"),
+];
+
 fn size(bytes: u64) -> String {
     let b = bytes as f64;
     if b < 1024.0 {
@@ -218,6 +248,9 @@ pub struct Panel {
     pub folder: String,
     /// Unter Home Assistant: Pfade als „share/…“, wie Samba sie zeigt.
     pub samba: bool,
+    /// Wo die Bibliotheken übers Internet zu erreichen sind (ein Tunnel),
+    /// ohne `/` am Ende — die Adresse im Code für die Band.
+    pub public_url: Option<String>,
 }
 
 /// Die Bibliothek, um die es auf der Seite geht.
@@ -247,6 +280,10 @@ fn notice(code: &str) -> Option<&'static str> {
         "renamed" => "Umbenannt.",
         "token" => "Neuer Token. Geräte mit dem alten müssen sich neu verbinden.",
         "removed" => "Entfernt. Der Ordner mit den Songs bleibt in share.",
+        "member" => "Aufgenommen. Jetzt mit dem QR-Code verbinden.",
+        "saved" => "Gespeichert.",
+        "extended" => "Verlängert. Der Zugang bleibt derselbe.",
+        "unmember" => "Von der Liste genommen. Sein Zugang gilt nicht mehr.",
         _ => return None,
     })
 }
@@ -266,6 +303,7 @@ impl Ui {
     pub fn page(
         &self,
         id: &str,
+        person: &str,
         pick: usize,
         message: Option<&str>,
         error: Option<&str>,
@@ -431,6 +469,8 @@ impl Ui {
             }
         };
 
+        let band = self.band_section(sel, person, &shown, chosen, now);
+
         let figures = match &shown.stats {
             None => String::new(),
             Some(st) => {
@@ -544,9 +584,132 @@ impl Ui {
             "{HEAD}<header><h1>Chordwright Data</h1><p class=\"muted\">{sub}</p></header>\n{banner}\
              <h2>Bibliotheken</h2>\n<div class=\"libs\">\n{cards}{create}\n</div>\n\
              <article>\n<h2>{}</h2>\n{chips}\n<div class=\"steps\">\n{steps}\n</div>\n\
-             <h3>Zahlen</h3>\n{figures}\n<h3>Verwalten</h3>\n{manage}\n</article>\n</main>\n</body>\n</html>\n",
+             <h3 id=\"band\">Band</h3>\n{band}\n<h3>Zahlen</h3>\n{figures}\n<h3>Verwalten</h3>\n{manage}\n</article>\n</main>\n</body>\n</html>\n",
             esc(&shown.name)
         )
+    }
+
+    /// Die Musiker: wer mit welchen Rollen dabei ist und wie lange, einer
+    /// aufnehmen — und zum gewählten (`person`) Code, Adresse und Token,
+    /// Name und Rollen, verlängern, von der Liste nehmen.
+    fn band_section(
+        &self,
+        sel: &str,
+        person: &str,
+        shown: &Shown,
+        chosen: Option<&String>,
+        now: i64,
+    ) -> String {
+        let csrf = self.csrf();
+        let id = esc(sel);
+        let choices = |current: u32| -> String {
+            BAND_DAYS
+                .iter()
+                .map(|(d, label)| {
+                    let on = if *d == current { " selected" } else { "" };
+                    format!("<option value=\"{d}\"{on}>{label}</option>")
+                })
+                .collect()
+        };
+        let boxes = |have: &[String]| -> String {
+            ROLES
+                .iter()
+                .map(|(l, name)| {
+                    let on = if have.iter().any(|h| h == l) { " checked" } else { "" };
+                    format!(
+                        "<label title=\"{name}\"><input type=\"checkbox\" name=\"role\" value=\"{l}\"{on}>{l}</label>"
+                    )
+                })
+                .collect()
+        };
+        let state = |m: &Member| match m.until {
+            _ if m.expired(now) => "abgelaufen".to_string(),
+            None => "bis auf Widerruf".to_string(),
+            Some(until) => left(until, now),
+        };
+        let members = self.registry.members(sel);
+        let rows: String = members
+            .iter()
+            .map(|m| {
+                let current = if m.id == person { " aria-current=\"true\"" } else { "" };
+                let letters: String = m
+                    .roles
+                    .iter()
+                    .map(|l| format!("<span class=\"letter\">{}</span>", esc(l)))
+                    .collect();
+                format!(
+                    "<li><a class=\"who\" href=\"?i={id}&amp;p={}#band\"{current}>{}</a> {letters} <span class=\"muted\">· {}</span></li>",
+                    esc(&m.id),
+                    esc(&m.name),
+                    state(m)
+                )
+            })
+            .collect();
+        let list = if members.is_empty() {
+            "<p class=\"muted\">Jeder Musiker bekommt einen eigenen Zugang: Songs, Sets und Abläufe lesen, der Bühne folgen und eintragen, wann er kann — sonst nichts.</p>".to_string()
+        } else {
+            format!("<ul class=\"rows\">{rows}</ul>")
+        };
+        let add = format!(
+            "<form class=\"row\" method=\"post\" action=\"./\">{csrf}<input type=\"hidden\" name=\"do\" value=\"member-add\"><input type=\"hidden\" name=\"id\" value=\"{id}\">\
+             <input name=\"name\" required maxlength=\"60\" placeholder=\"Name\" aria-label=\"Name\" autocomplete=\"off\">\
+             <span class=\"roles\" role=\"group\" aria-label=\"Rollen\">{}</span>\
+             <select name=\"days\" aria-label=\"Wie lange\">{}</select><button>Aufnehmen</button></form>",
+            boxes(&[]),
+            choices(30)
+        );
+        let Some(m) = members.iter().find(|m| m.id == person) else {
+            return format!("{list}\n{add}");
+        };
+        // Über den Tunnel, wenn es einen gibt; sonst nur im Heimnetz.
+        let server = match &self.panel.public_url {
+            Some(url) => Some(format!("{url}{}", shown.path)),
+            None => chosen.map(|a| {
+                format!(
+                    "{}{}",
+                    address_url(&self.panel.scheme, a, &self.panel.port),
+                    shown.path
+                )
+            }),
+        };
+        let code = match &server {
+            None => String::new(),
+            Some(server) => {
+                let link = connect_link(server, &m.token);
+                let reach = if self.panel.public_url.is_some() {
+                    String::new()
+                } else {
+                    "<p class=\"note\">Nur im Heimnetz erreichbar. Für unterwegs einen Tunnel einrichten und seine Adresse unter <b>Konfiguration → public_url</b> eintragen (siehe Dokumentation).</p>\n  ".to_string()
+                };
+                format!(
+                    "<section>\n  {}\n  {reach}<p>Mit der Kamera scannen, oder in Chordwright unter <b>Einstellungen → Datenquelle → Server hinzufügen</b> „QR-Code scannen“.</p>\n  \
+                     <dl>\n    <dt>Adresse</dt><dd class=\"value\">{}</dd>\n    <dt>Token</dt><dd class=\"value\">{}</dd>\n  </dl>\n</section>\n",
+                    qr_svg(&link, &format!("QR-Code: Chordwright für {} verbinden", m.name)),
+                    esc(server),
+                    esc(&m.token)
+                )
+            }
+        };
+        let mid = esc(&m.id);
+        let hidden = format!(
+            "{csrf}<input type=\"hidden\" name=\"id\" value=\"{id}\"><input type=\"hidden\" name=\"p\" value=\"{mid}\">"
+        );
+        let manage = format!(
+            "<section>\n  <p><b>{}</b> <span class=\"muted\">· {}</span></p>\n  \
+             <form class=\"row\" method=\"post\" action=\"./\">{hidden}<input type=\"hidden\" name=\"do\" value=\"member-edit\">\
+             <input name=\"name\" required maxlength=\"60\" value=\"{}\" aria-label=\"Name\">\
+             <span class=\"roles\" role=\"group\" aria-label=\"Rollen\">{}</span><button class=\"quiet\">Speichern</button></form>\n  \
+             <form class=\"row\" method=\"post\" action=\"./\">{hidden}<input type=\"hidden\" name=\"do\" value=\"member-extend\">\
+             <select name=\"days\" aria-label=\"Ab jetzt für\">{}</select><button class=\"quiet\" title=\"Der Token bleibt; verbundene Geräte bleiben verbunden\">Verlängern</button></form>\n  \
+             <form class=\"row\" method=\"post\" action=\"./\" onsubmit=\"return confirm('Von der Liste nehmen? Mit diesem Zugang kommt niemand mehr hinein.')\">{hidden}<input type=\"hidden\" name=\"do\" value=\"member-remove\">\
+             <button class=\"quiet danger\" title=\"Die Antworten bleiben im Ordner\">Von der Liste nehmen</button></form>\n</section>",
+            esc(&m.name),
+            state(m),
+            esc(&m.name),
+            boxes(&m.roles),
+            choices(if m.until.is_none() { 0 } else { 30 })
+        );
+        format!("{list}\n{add}\n<div class=\"steps\">\n{code}{manage}\n</div>")
     }
 
     fn csrf(&self) -> String {
@@ -568,6 +731,8 @@ impl Ui {
             ));
         }
         let fail = |e: String| (id.clone(), e);
+        let person = field("p");
+        let days = || field("days").trim().parse::<u32>().unwrap_or(30).min(365);
         match field("do").as_str() {
             "create" => {
                 let entry = self
@@ -583,6 +748,35 @@ impl Ui {
             "token" => {
                 self.registry.new_token(&id).map_err(fail)?;
                 Ok(format!("?i={id}&m=token"))
+            }
+            "member-add" => {
+                let m = self
+                    .registry
+                    .add_member(
+                        &id,
+                        &field("name"),
+                        &form_fields(body, "role"),
+                        days(),
+                        now_ms(),
+                    )
+                    .map_err(fail)?;
+                Ok(format!("?i={id}&p={}&m=member#band", m.id))
+            }
+            "member-edit" => {
+                self.registry
+                    .edit_member(&id, &person, &field("name"), &form_fields(body, "role"))
+                    .map_err(fail)?;
+                Ok(format!("?i={id}&p={person}&m=saved#band"))
+            }
+            "member-extend" => {
+                self.registry
+                    .extend_member(&id, &person, days(), now_ms())
+                    .map_err(fail)?;
+                Ok(format!("?i={id}&p={person}&m=extended#band"))
+            }
+            "member-remove" => {
+                self.registry.remove_member(&id, &person).map_err(fail)?;
+                Ok(format!("?i={id}&m=unmember#band"))
             }
             "remove" => {
                 self.registry.remove(&id).map_err(fail)?;
@@ -646,7 +840,13 @@ const HEAD: &str = r#"<!doctype html>
   form { margin: 0; }
   .row { display: flex; flex-wrap: wrap; gap: 8px; margin: 0 0 10px; }
   .row input { flex: 1 1 200px; min-width: 0; }
-  input { font: inherit; padding: 8px 12px; min-height: 36px; border: 1px solid var(--line); border-radius: 8px; background: var(--bg); color: var(--fg); }
+  .roles { display: inline-flex; flex-wrap: wrap; gap: 6px; }
+  .roles label { display: inline-flex; align-items: center; gap: 4px; min-height: 36px; padding: 0 10px; border: 1px solid var(--line); border-radius: 999px; font-weight: 600; cursor: pointer; }
+  .roles input { margin: 0; flex: none; min-height: 0; padding: 0; }
+  .letter { display: inline-grid; place-items: center; width: 22px; height: 22px; border: 1px solid var(--line); border-radius: 6px; font-size: 12px; font-weight: 600; }
+  .who { font-weight: 600; }
+  .who[aria-current] { text-decoration: underline; }
+  input, select { font: inherit; padding: 8px 12px; min-height: 36px; border: 1px solid var(--line); border-radius: 8px; background: var(--bg); color: var(--fg); }
   button { font: inherit; padding: 8px 16px; min-height: 36px; border: 1px solid var(--accent); border-radius: 999px; background: var(--accent); color: var(--bg); cursor: pointer; }
   button.quiet { background: transparent; color: var(--fg); border-color: var(--line); }
   button.danger { color: var(--danger); }
@@ -746,7 +946,7 @@ fn answer(mut stream: TcpStream, ui: &Ui) {
                 &mut stream,
                 "400 Bad Request",
                 html,
-                &ui.page(&id, 0, None, Some(&e)),
+                &ui.page(&id, "", 0, None, Some(&e)),
             ),
         };
     }
@@ -774,7 +974,7 @@ fn answer(mut stream: TcpStream, ui: &Ui) {
         &mut stream,
         "200 OK",
         html,
-        &ui.page(&id, pick, message, None),
+        &ui.page(&id, &param("p").unwrap_or_default(), pick, message, None),
     );
 }
 

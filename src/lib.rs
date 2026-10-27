@@ -16,6 +16,14 @@
 //! to `https://host:4174/i/<id>` as to any server — it only ever appends
 //! `/api/…` to the address. The Home Assistant add-on manages them from its
 //! web UI (src/instances.rs).
+//!
+//! Each library can also be opened by its musicians (`Member`), each with a
+//! token of their own: they read everything and play along on the shared
+//! stage, but the only record they write is their own answers — when they can
+//! play (`user/availability.<id>`). So a library can be handed to the band,
+//! also over a tunnel from the internet, without anyone rearranging the
+//! songs. A musician's access ends when its time is up or when they are taken
+//! off the list (`Hub::set_members`).
 
 mod backups;
 mod certs;
@@ -86,6 +94,8 @@ pub struct Options {
     pub site: Option<Site>,
     /// A browser that types this code gets a guest token (pairing.rs).
     pub pairing: Option<String>,
+    /// The musicians, each with a token that reads and writes only their answers.
+    pub members: Vec<Member>,
     /// A snapshot this often (hours) when something changed; 0 never.
     pub backup_every: f64,
     /// How many scheduled snapshots stay.
@@ -109,9 +119,48 @@ impl Default for Options {
             plain_port: None,
             site: None,
             pairing: None,
+            members: Vec::new(),
             backup_every: 24.0,
             backup_keep: 14,
         }
+    }
+}
+
+/// What a musician plays, by letter: drums, piano, acoustic and electric
+/// guitar, bass, singer.
+pub const ROLES: [(&str, &str); 6] = [
+    ("D", "Drum"),
+    ("P", "Piano"),
+    ("A", "A-Git"),
+    ("E", "E-Git"),
+    ("B", "Bass"),
+    ("S", "Singer"),
+];
+
+/// A musician's way into a library: everything to read, the shared stage to
+/// lead and follow, and one record to write — their own answers.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, serde::Deserialize)]
+pub struct Member {
+    /// Like an instance id (`is_instance_id`); names their answers' record.
+    pub id: String,
+    pub name: String,
+    pub token: String,
+    /// Letters from `ROLES`.
+    #[serde(default)]
+    pub roles: Vec<String>,
+    /// When the access ends, ms since the epoch; None: until taken back.
+    #[serde(default)]
+    pub until: Option<i64>,
+}
+
+impl Member {
+    pub fn expired(&self, now: i64) -> bool {
+        self.until.is_some_and(|u| now >= u)
+    }
+
+    /// The one record they may write: `user/<this>`.
+    pub fn answers_key(&self) -> String {
+        format!("availability.{}", self.id)
     }
 }
 
@@ -324,6 +373,29 @@ impl Hub {
     /// Stops serving `/i/<id>`. Its folder stays as it is.
     pub fn remove(&self, id: &str) -> bool {
         self.instances_mut().remove(id).is_some()
+    }
+
+    /// The musicians of `/i/<id>` (None: the server's own library) from now
+    /// on. Their open event streams end and reconnect with what holds now.
+    /// False when there is no such library.
+    pub fn set_members(&self, id: Option<&str>, members: Vec<Member>) -> bool {
+        let shared = match id {
+            None => self.0.main.clone(),
+            Some(id) => match self.instances().get(id) {
+                Some(i) => i.shared.clone(),
+                None => return false,
+            },
+        };
+        shared.set_members(members);
+        true
+    }
+
+    /// The musicians of `/i/<id>` (None: the server's own).
+    pub fn members(&self, id: Option<&str>) -> Option<Vec<Member>> {
+        match id {
+            None => Some(self.0.main.members()),
+            Some(id) => Some(self.instances().get(id)?.shared.members()),
+        }
     }
 
     pub fn ids(&self) -> Vec<String> {
@@ -550,6 +622,7 @@ fn start(mut o: Options) -> Result<Server, String> {
             .filter(|c| !c.is_empty())
             .map(pairing::Pairing::new),
     )?;
+    shared.set_members(o.members.clone());
 
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .worker_threads(2)
@@ -672,6 +745,7 @@ fn library_state(
         store,
         backups: Backups::new(&root, backup_keep),
         journal: Journal::open(&root),
+        members: RwLock::new(Vec::new()),
         stage: Stage::new(move |snapshot| stage_listeners.send(http::stage_line(&snapshot))),
         listeners,
         self_writes: Mutex::new(HashMap::new()),

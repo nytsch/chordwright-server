@@ -9,7 +9,7 @@
 //!   PUT    /api/:db/record/:key    → body is the raw value string
 //!   DELETE /api/:db/record/:key
 //!   GET    /api/events             → SSE: {"db","key","client"} on every change, `event: stage` for the stage
-//!   GET    /api/health             → { ok, databases, dir, watching, revisions, backups, changes, stage }
+//!   GET    /api/health             → { ok, databases, dir, watching, revisions, backups, changes, stage, pairing }, with a token also { access }
 //!   GET    /api/changes?limit=50   → { changes: [...] }, newest first
 //!   GET    /api/changes?db=&key=   → { change }
 //!   GET    /api/time               → { now }
@@ -29,6 +29,13 @@
 //!   GET    /*                      → the app, when the server was given one (site.rs)
 //! ```
 //!
+//!   GET    /api/band               → { roles, members: [{ id, name, roles }], me }
+//!
+//! A musician's token (`Member`) opens the same routes to read, and the
+//! stage; it writes only `user/availability.<their id>`, under their name.
+//! Any other write, and anything under /api/backups, is 403 `read only`;
+//! once their time is up every route is 401 `expired`.
+//!
 //! PUT and DELETE take `If-Match: "<rev>"` or `If-None-Match: *`; when the
 //! record is no longer what the writer saw, nothing changes and the answer is
 //! 412 with what is there now.
@@ -38,7 +45,7 @@ use std::convert::Infallible;
 use std::path::PathBuf;
 use std::pin::Pin;
 use std::sync::atomic::{AtomicI64, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, RwLock};
 use std::task::{Context, Poll};
 use std::time::{Duration, Instant};
 
@@ -57,26 +64,49 @@ use crate::site::{self, Site};
 use crate::stage::{clean_room, Answer, Stage};
 use crate::store::{is_database, is_valid_key, key_for_path, Expect, Outcome, Store, DATABASES};
 use crate::util::{decode_component, now_ms, number, parse_query};
+use crate::{Member, ROLES};
 
 pub type Body = BoxBody<Bytes, Infallible>;
 
+/// One open /api/events stream.
+struct Listener {
+    tx: mpsc::UnboundedSender<Bytes>,
+    /// A musician's: when their access ends (i64::MAX: when taken back).
+    /// None: the owner's.
+    member_until: Option<i64>,
+}
+
 /// Everyone listening on /api/events.
 #[derive(Default)]
-pub struct Listeners(Mutex<Vec<mpsc::UnboundedSender<Bytes>>>);
+pub struct Listeners(Mutex<Vec<Listener>>);
 
 impl Listeners {
     pub fn send(&self, text: String) {
         let bytes = Bytes::from(text);
+        let now = now_ms();
         let mut all = self.0.lock().unwrap_or_else(|e| e.into_inner());
-        // A listener that went away is noticed here, at the next line for it.
-        all.retain(|tx| tx.send(bytes.clone()).is_ok());
+        // A listener that went away is noticed here, at the next line for it;
+        // a musician whose time is up, too.
+        all.retain(|l| l.member_until.is_none_or(|u| now < u) && l.tx.send(bytes.clone()).is_ok());
     }
 
-    fn add(&self) -> mpsc::UnboundedReceiver<Bytes> {
+    fn add(&self, member: Option<&Member>) -> mpsc::UnboundedReceiver<Bytes> {
         let (tx, rx) = mpsc::unbounded_channel();
         let _ = tx.send(Bytes::from_static(b": connected\n\n"));
-        self.0.lock().unwrap_or_else(|e| e.into_inner()).push(tx);
+        let member_until = member.map(|m| m.until.unwrap_or(i64::MAX));
+        self.0
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .push(Listener { tx, member_until });
         rx
+    }
+
+    /// Ends the musicians' streams; an app connects again and learns what holds now.
+    fn drop_members(&self) {
+        self.0
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .retain(|l| l.member_until.is_none());
     }
 
     pub fn count(&self) -> usize {
@@ -84,7 +114,7 @@ impl Listeners {
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .iter()
-            .filter(|tx| !tx.is_closed())
+            .filter(|l| !l.tx.is_closed())
             .count()
     }
 }
@@ -110,6 +140,8 @@ pub struct Shared {
     pub ca_der: Option<Vec<u8>>,
     pub site: Option<Site>,
     pub pairing: Option<Pairing>,
+    /// The musicians: each reads, and writes only their answers (`Member`).
+    pub members: RwLock<Vec<Member>>,
     pub store: Store,
     pub backups: Backups,
     pub journal: Journal,
@@ -127,7 +159,75 @@ pub struct Shared {
 /// hand is not mistaken for this client's own write.
 const SELF_WRITE_WINDOW: Duration = Duration::from_secs(1);
 
+/// What a request may do.
+#[derive(Clone, PartialEq, Eq)]
+enum Access {
+    /// The library's token, a paired browser, or no token at all.
+    Owner,
+    /// A musician's: read, the stage, and their own answers.
+    Member(Member),
+}
+
+impl Access {
+    fn member(&self) -> Option<&Member> {
+        match self {
+            Access::Member(m) => Some(m),
+            Access::Owner => None,
+        }
+    }
+}
+
+/// Who plays in a library, without anyone's token.
+fn roster(members: &[Member]) -> Value {
+    Value::Array(
+        members
+            .iter()
+            .map(|m| json!({ "id": m.id, "name": m.name, "roles": m.roles }))
+            .collect(),
+    )
+}
+
 impl Shared {
+    pub fn members(&self) -> Vec<Member> {
+        self.members
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
+    }
+
+    pub fn set_members(&self, members: Vec<Member>) {
+        let members = members
+            .into_iter()
+            .filter(|m| !m.token.is_empty())
+            .collect();
+        *self.members.write().unwrap_or_else(|e| e.into_inner()) = members;
+        self.listeners.drop_members();
+    }
+
+    /// Who `given` is: Ok(None) nobody, Err(()) a musician after their time.
+    fn access(&self, given: &str) -> Result<Option<Access>, ()> {
+        if self.token.is_empty() || given == self.token {
+            return Ok(Some(Access::Owner));
+        }
+        // A guest only while pairing is on with the same code.
+        if self
+            .pairing
+            .as_ref()
+            .is_some_and(|p| p.admits(&self.token, given))
+        {
+            return Ok(Some(Access::Owner));
+        }
+        if given.is_empty() {
+            return Ok(None);
+        }
+        let members = self.members.read().unwrap_or_else(|e| e.into_inner());
+        match members.iter().find(|m| m.token == given) {
+            Some(m) if m.expired(now_ms()) => Err(()),
+            Some(m) => Ok(Some(Access::Member(m.clone()))),
+            None => Ok(None),
+        }
+    }
+
     pub fn self_write(&self, stamp: &str) -> Option<Option<String>> {
         let writes = self.self_writes.lock().unwrap_or_else(|e| e.into_inner());
         writes
@@ -297,10 +397,12 @@ async fn route(s: Arc<Shared>, req: Request<Incoming>) -> Response<Body> {
             .and_then(|site| site::respond(site, &path, method == Method::HEAD));
         return page.unwrap_or_else(|| error(404, "not found"));
     }
+    let given = header(req.headers(), "authorization")
+        .and_then(|h| h.strip_prefix("Bearer ").map(String::from))
+        .or_else(|| param("token"))
+        .unwrap_or_default();
     if part(1) == Some("health") {
-        return send(
-            200,
-            json!({
+        let mut health = json!({
                 "ok": true,
                 "databases": DATABASES,
                 "dir": s.root.to_string_lossy(),
@@ -310,30 +412,36 @@ async fn route(s: Arc<Shared>, req: Request<Incoming>) -> Response<Body> {
                 "changes": true,
                 "stage": true,
                 "pairing": s.pairing.is_some(),
-            }),
-        );
+        });
+        // With a token, what it may do — so a musician's app knows who it is
+        // and what not to write.
+        if !given.is_empty() {
+            health["access"] = match s.access(&given) {
+                Ok(Some(Access::Owner)) => json!("owner"),
+                Ok(Some(Access::Member(m))) => {
+                    health["member"] = json!({ "id": m.id, "name": m.name, "roles": m.roles });
+                    health["until"] = json!(m.until);
+                    json!("member")
+                }
+                Ok(None) => json!("none"),
+                Err(()) => json!("expired"),
+            };
+        }
+        return send(200, health);
     }
     if part(1) == Some("pair") && parts.len() == 2 {
         return pair(&s, req).await;
     }
-    if !s.token.is_empty() {
-        let given = header(req.headers(), "authorization")
-            .and_then(|h| h.strip_prefix("Bearer ").map(String::from))
-            .or_else(|| param("token"))
-            .unwrap_or_default();
-        // A guest only while pairing is on with the same code.
-        let guest = s
-            .pairing
-            .as_ref()
-            .is_some_and(|p| p.admits(&s.token, &given));
-        if given != s.token && !guest {
-            return error(401, "unauthorised");
-        }
-    }
+    let access = match s.access(&given) {
+        Ok(Some(who)) => who,
+        Ok(None) => return error(401, "unauthorised"),
+        Err(()) => return error(401, "expired"),
+    };
+    let read_only = || error(403, "read only");
 
     match part(1) {
         Some("events") => {
-            let rx = s.listeners.add();
+            let rx = s.listeners.add(access.member());
             return Response::builder()
                 .status(200)
                 .header("content-type", "text/event-stream")
@@ -346,6 +454,21 @@ async fn route(s: Arc<Shared>, req: Request<Incoming>) -> Response<Body> {
             return send(200, json!({ "now": now_ms() }))
         }
         Some("stage") => return stage(&s, req, &parts[2..]).await,
+        Some("band") if parts.len() == 2 && method == Method::GET => {
+            let roles: Vec<Value> = ROLES
+                .iter()
+                .map(|(l, name)| json!({ "id": l, "name": name }))
+                .collect();
+            return send(
+                200,
+                json!({
+                    "roles": roles,
+                    "members": roster(&s.members()),
+                    "me": access.member().map(|m| m.id.clone()),
+                }),
+            );
+        }
+        Some("backups") if access.member().is_some() => return read_only(),
         Some("backups") => return backups(&s, req, &parts[2..]).await,
         Some("changes") if parts.len() == 2 && method == Method::GET => {
             let (db, key) = (param("db"), param("key"));
@@ -418,6 +541,15 @@ async fn route(s: Arc<Shared>, req: Request<Incoming>) -> Response<Body> {
         };
     }
 
+    // A musician writes their own answers and nothing else.
+    if let (true, Some(m)) = (
+        method == Method::PUT || method == Method::DELETE,
+        access.member(),
+    ) {
+        if db != "user" || key != m.answers_key() {
+            return read_only();
+        }
+    }
     if method == Method::PUT || method == Method::DELETE {
         let stamp = format!("{db}/{key}");
         s.self_writes
@@ -425,7 +557,11 @@ async fn route(s: Arc<Shared>, req: Request<Incoming>) -> Response<Body> {
             .unwrap_or_else(|e| e.into_inner())
             .insert(stamp.clone(), (client.clone(), Instant::now()));
         let expect = expected_revision(req.headers());
-        let by = user_of(req.headers());
+        // A musician writes under their own name, whatever the app sends.
+        let by = match access.member() {
+            Some(m) => Some(m.name.clone()),
+            None => user_of(req.headers()),
+        };
         let put = method == Method::PUT;
         let value = if put {
             match req.into_body().collect().await {

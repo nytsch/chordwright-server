@@ -143,6 +143,7 @@ wrote it.
 | `--loopback-port` | none | also plain http on `127.0.0.1` at this port (`0` = any) — for the program that started the server |
 | `--plain-port` | none | also plain http on `--host` at this port (`0` = any) — for a browser without the CA; the token crosses the network unencrypted |
 | `--site` | none | a folder served under `/` (the app for a browser); unknown paths without a dot get its `index.html` |
+| `--members` | none | a JSON file with the musicians, `[{ id, name, token, roles, until }]` (see [The band](#the-band)) |
 | `--pairing` | none | a code (or `auto` for six random digits) a browser trades for a guest token at `POST /api/pair` |
 
 `--port 0` lets the system pick a free port; `--ready-json` says which.
@@ -193,7 +194,7 @@ also works for an app on an iPhone home screen.
 ## API
 
 ```
-GET    /api/health                → { ok, databases, dir, watching, revisions, backups, changes, stage, pairing }   (public)
+GET    /api/health                → { ok, databases, dir, watching, revisions, backups, changes, stage, pairing, access?, until? }   (public; `access` only with a token)
 POST   /api/pair                  ← { code }  → { token } | 403 wrong | 429 { retryAfter } | 404 pairing off   (public)
 GET    /*                         → the app's files, with --site   (public)
 GET    /api/:db                   → { key: value }
@@ -262,6 +263,33 @@ Latin-1). The server keeps the last change to every record — `at`, `by`,
 a list of the recent ones, in `.chordwright/changes.json`. Several saves of the
 same record by the same person within five minutes are one entry in that list.
 It is a label, not an account: whoever holds the token can write under any name.
+
+## The band
+
+A library can be opened by its musicians, each with a token of their own
+(`Member { id, name, token, roles, until }`). A musician reads every record,
+follows the change stream and plays along on the shared stage (lead and
+follow), and writes exactly one record: their own answers,
+`user/availability.<id>`, always under their own name in the change journal.
+Any other `PUT` or `DELETE`, and anything under `/api/backups`, is
+`403 { error: "read only" }`. Their access can end at a given time, after
+which every route answers `401 { error: "expired" }`; taking them off the list
+answers `401 unauthorised`. Either way their open event streams end.
+
+`roles` are letters: `D` drum, `P` piano, `A` acoustic guitar, `E` electric
+guitar, `B` bass, `S` singer.
+
+```
+GET    /api/band    → { roles: [{ id, name }], members: [{ id, name, roles }], me: id | null }
+```
+
+No token ever leaves the server this way. `GET /api/health` with a token says
+what it may do: `access` is `owner`, `member` (with `member: { id, name,
+roles }` and `until`, ms since the epoch or null), `expired` or `none`.
+
+From the command line `--members <file.json>`; from Rust `Options { members, … }`
+or, while it runs, `server.hub().set_members(id, members)`. The Home Assistant
+add-on keeps them per library, edited in its web UI, across restarts.
 
 ## Backups
 
