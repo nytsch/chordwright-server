@@ -17,7 +17,7 @@
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
-use chordwright_server::{is_instance_id, Hub, Library, Member, ROLES};
+use chordwright_server::{is_instance_id, Can, Hub, Library, Member, ROLES};
 use serde::{Deserialize, Serialize};
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
@@ -294,6 +294,7 @@ impl Registry {
         lib: &str,
         name: &str,
         roles: &[String],
+        can: Can,
         days: u32,
         now: i64,
     ) -> Result<Member, String> {
@@ -318,6 +319,7 @@ impl Registry {
                 token,
                 roles,
                 until: until(days, now),
+                can,
             };
             members.push(member.clone());
             Ok(member)
@@ -331,6 +333,7 @@ impl Registry {
         id: &str,
         name: &str,
         roles: &[String],
+        can: Can,
     ) -> Result<(), String> {
         let name = clean_name(name).ok_or("Ohne Namen geht es nicht.")?;
         let roles = clean_roles(roles);
@@ -338,6 +341,7 @@ impl Registry {
             let m = find_member(members, id)?;
             m.name = name;
             m.roles = roles;
+            m.can = can;
             Ok(())
         })
     }
@@ -455,20 +459,31 @@ mod tests {
         let chor = registry.create("Chor").unwrap();
 
         let niko = registry
-            .add_member("", "Niko", &roles(&["S", "A", "X", "A"]), 7, 1_000)
+            .add_member(
+                "",
+                "Niko",
+                &roles(&["S", "A", "X", "A"]),
+                Can::Read,
+                7,
+                1_000,
+            )
             .unwrap();
         assert_eq!(niko.id, "niko");
         assert_eq!(niko.roles, ["A", "S"], "known letters, once, in order");
         assert_eq!(niko.until, Some(1_000 + 7 * DAY_MS));
-        let twin = registry.add_member("", "Niko", &[], 0, 1_000).unwrap();
+        let twin = registry
+            .add_member("", "Niko", &[], Can::Read, 0, 1_000)
+            .unwrap();
         assert_eq!(twin.id, "niko-2");
         assert_ne!(twin.token, niko.token);
-        assert!(registry.add_member("nope", "Lea", &[], 1, 0).is_err());
-        assert!(registry.add_member("", "  ", &[], 1, 0).is_err());
+        assert!(registry
+            .add_member("nope", "Lea", &[], Can::Read, 1, 0)
+            .is_err());
+        assert!(registry.add_member("", "  ", &[], Can::Read, 1, 0).is_err());
 
         registry.extend_member("", "niko", 30, 2_000).unwrap();
         registry
-            .edit_member("", "niko", "Niko K.", &roles(&["E"]))
+            .edit_member("", "niko", "Niko K.", &roles(&["E"]), Can::Sets)
             .unwrap();
         let now = registry.members("");
         assert_eq!(now[0].token, niko.token, "extending keeps the token");
@@ -480,7 +495,7 @@ mod tests {
         assert_eq!(server.hub().members(None), Some(now.clone()));
 
         let lea = registry
-            .add_member(&chor.id, "Lea", &roles(&["P"]), 0, 0)
+            .add_member(&chor.id, "Lea", &roles(&["P"]), Can::All, 0, 0)
             .unwrap();
         // A new library token leaves the musicians alone.
         registry.new_token(&chor.id).unwrap();
