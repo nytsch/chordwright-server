@@ -1,5 +1,10 @@
 # Changelog
 
+## Noch nicht veröffentlicht
+
+- `public_url` nimmt auch einen bloßen Namen (`band.example.org`, wie bei Cloudflare eingetragen) und setzt `https://` davor; bisher galt er stillschweigend nicht, und die QR-Codes der Musiker zeigten nur Adressen im Heimnetz.
+- Mit `public_url` bekommt auch der eigene QR-Code einer Bibliothek die Adresse von draußen zur Wahl (letzter Chip über dem Code, ohne Zertifikatsschritt).
+
 ## 2.2.0
 
 - Die Band: In der Web-UI bekommt jede Bibliothek eine Liste ihrer Musiker, jeder mit Rollen (D, P, A, E, B, S) und eigenem Zugang samt QR-Code, befristet (1 Tag bis 30 Tage) oder bis auf Widerruf. Ein Musiker liest Songs, Sets und Abläufe, spielt auf der gemeinsamen Bühne mit und trägt ein, wann er kann — sonst schreibt er nichts. Verlängern behält den Zugang, Von der Liste nehmen sperrt ihn sofort.

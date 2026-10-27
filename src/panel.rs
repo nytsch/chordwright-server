@@ -125,6 +125,29 @@ pub fn order_addresses(addresses: &[String]) -> Vec<String> {
     out
 }
 
+/// Wo die App den Server findet, zur Wahl über dem QR-Code: die Adressen im
+/// Heimnetz, mit Tunnel zuletzt die von draußen. Je Ort die Beschriftung und
+/// die Adresse ohne Pfad.
+pub fn places(
+    addresses: &[String],
+    scheme: &str,
+    port: &str,
+    public: Option<&str>,
+) -> Vec<(String, String)> {
+    let mut out: Vec<(String, String)> = order_addresses(addresses)
+        .into_iter()
+        .map(|a| {
+            let url = address_url(scheme, &a, port);
+            (a, url)
+        })
+        .collect();
+    if let Some(url) = public {
+        let host = url.split_once("://").map_or(url, |(_, rest)| rest);
+        out.push((host.to_string(), url.to_string()));
+    }
+    out
+}
+
 fn esc(s: &str) -> String {
     s.chars()
         .map(|c| match c {
@@ -404,29 +427,42 @@ impl Ui {
         // Die gewählte: Adressen, QR-Codes, Zahlen, Verwalten.
         let list = order_addresses(&self.panel.addresses);
         let chosen = list.get(pick).or(list.first());
-        let server = chosen.map(|a| {
-            format!(
-                "{}{}",
-                address_url(&self.panel.scheme, a, &self.panel.port),
-                shown.path
-            )
-        });
+        let spots = places(
+            &self.panel.addresses,
+            &self.panel.scheme,
+            &self.panel.port,
+            self.panel.public_url.as_deref(),
+        );
+        let pick = if pick < spots.len() { pick } else { 0 };
+        // Über den Tunnel: Cloudflare hat ein echtes Zertifikat, die eigene CA braucht es dann nicht.
+        let outside = self.panel.public_url.is_some() && pick + 1 == spots.len();
+        let server = spots
+            .get(pick)
+            .map(|(_, base)| format!("{base}{}", shown.path));
         let id_q = if sel.is_empty() {
             String::new()
         } else {
             format!("i={}&amp;", esc(sel))
         };
-        let chips = if list.len() > 1 {
-            let links: String = list
+        let chips = if spots.len() > 1 {
+            let links: String = spots
                 .iter()
                 .enumerate()
-                .map(|(i, a)| {
-                    let current = if Some(a) == chosen {
+                .map(|(i, (label, _))| {
+                    let current = if i == pick {
                         " aria-current=\"true\""
                     } else {
                         ""
                     };
-                    format!("<a href=\"?{id_q}a={i}\"{current}>{}</a>", esc(a))
+                    let title = if self.panel.public_url.is_some() && i + 1 == spots.len() {
+                        " title=\"Von unterwegs, über den Tunnel\""
+                    } else {
+                        ""
+                    };
+                    format!(
+                        "<a href=\"?{id_q}a={i}\"{current}{title}>{}</a>",
+                        esc(label)
+                    )
                 })
                 .collect();
             format!("<nav class=\"chips\" aria-label=\"Adresse\">{links}</nav>")
@@ -442,7 +478,7 @@ impl Ui {
                 let root = server.strip_suffix(&shown.path).unwrap_or(server);
                 let ca = format!("{root}/ca.crt");
                 let link = connect_link(server, &shown.token);
-                let ca_step = if self.panel.own_ca {
+                let ca_step = if self.panel.own_ca && !outside {
                     format!(
                         "<section>\n  <h3><span class=\"n\">1</span>Zertifikat <small>einmal pro Gerät</small></h3>\n  {}\n  \
                          <p>Mit der Kamera scannen und öffnen. Am iPhone danach unter <b>Einstellungen → Allgemein → Info →\n  \
@@ -460,7 +496,7 @@ impl Ui {
                      <p>Mit der Kamera scannen, oder in Chordwright unter <b>Einstellungen → Datenquelle → Server hinzufügen</b>\n  \
                      „QR-Code scannen“. Auf diesem Gerät: <a class=\"connect\" href=\"{}\" target=\"_blank\" rel=\"noreferrer\">hier öffnen</a>.</p>\n  \
                      <dl>\n    <dt>Adresse</dt><dd class=\"value\">{}</dd>\n    <dt>Token</dt><dd class=\"value\">{}</dd>\n  </dl>\n</section>",
-                    if self.panel.own_ca { "<span class=\"n\">2</span>" } else { "" },
+                    if self.panel.own_ca && !outside { "<span class=\"n\">2</span>" } else { "" },
                     qr_svg(&link, "QR-Code: Chordwright mit dieser Bibliothek verbinden"),
                     esc(&link),
                     esc(server),
@@ -1008,6 +1044,24 @@ mod tests {
             "ha.local".into(),
         ]);
         assert_eq!(ordered, ["10.0.0.9", "ha.local", "fd00::5"]);
+        let spots = places(
+            &["ha.local".into(), "10.0.0.9".into()],
+            "https",
+            "4174",
+            Some("https://band.example.org"),
+        );
+        assert_eq!(
+            spots,
+            [
+                ("10.0.0.9".to_string(), "https://10.0.0.9:4174".to_string()),
+                ("ha.local".to_string(), "https://ha.local:4174".to_string()),
+                (
+                    "band.example.org".to_string(),
+                    "https://band.example.org".to_string()
+                ),
+            ]
+        );
+        assert_eq!(places(&[], "https", "4174", None), []);
         assert!(allowed("::ffff:172.30.32.2".parse().unwrap()));
         assert!(!allowed("192.168.1.2".parse().unwrap()));
     }

@@ -106,7 +106,7 @@ Den Port änderst du unter **Netzwerk**. In der App trägst du dann diesen Port 
 Damit die Band auch von zu Hause an die Bibliothek kommt, ohne Portfreigabe am Router: ein Tunnel zu Cloudflare. Du brauchst eine eigene Domain bei Cloudflare (kostenloser Tarif reicht).
 
 1. Das Add-on **Cloudflared** installieren (Repository `https://github.com/homeassistant-apps/repository`), aber noch nicht starten.
-2. Hier unter **Konfiguration**: `tunnel` einschalten und bei `public_url` die Adresse eintragen, unter der die Bibliothek draußen erreichbar sein soll, z. B. `https://songs.example.org`. Add-on neu starten. Es hört jetzt zusätzlich ohne https auf Port 4175 — die Verschlüsselung übernimmt der Tunnel.
+2. Hier unter **Konfiguration**: `tunnel` einschalten und bei `public_url` die Adresse eintragen, unter der die Bibliothek draußen erreichbar sein soll, z. B. `https://songs.example.org` (ein bloßer Name wie `songs.example.org` reicht auch). Add-on neu starten; im Protokoll steht dann `Von draußen https://songs.example.org`, sonst gilt die Adresse nicht. Es hört jetzt zusätzlich ohne https auf Port 4175 — die Verschlüsselung übernimmt der Tunnel.
 3. Im Cloudflared-Add-on unter **Konfiguration → additional_hosts**:
 
    ```yaml
