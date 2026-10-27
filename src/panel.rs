@@ -180,6 +180,26 @@ fn since(then: i64, now: i64) -> String {
 }
 
 /// „1,2 MB“
+/// Wie lange eine Freigabe noch gilt.
+fn left(until: i64, now: i64) -> String {
+    let s = (until - now) / 1000;
+    match s {
+        i64::MIN..=0 => "abgelaufen".into(),
+        1..3600 => format!("noch {} Min.", (s / 60).max(1)),
+        3600..172800 => format!("noch {} Std.", s / 3600),
+        _ => format!("noch {} Tage", (s + 43_200) / 86400),
+    }
+}
+
+/// Die Wahl, wie lange eine Freigabe gilt; 0 heißt bis auf Widerruf.
+const BAND_DAYS: [(u32, &str); 5] = [
+    (1, "1 Tag"),
+    (3, "3 Tage"),
+    (7, "1 Woche"),
+    (30, "30 Tage"),
+    (0, "bis auf Widerruf"),
+];
+
 fn size(bytes: u64) -> String {
     let b = bytes as f64;
     if b < 1024.0 {
@@ -218,6 +238,9 @@ pub struct Panel {
     pub folder: String,
     /// Unter Home Assistant: Pfade als „share/…“, wie Samba sie zeigt.
     pub samba: bool,
+    /// Wo die Bibliotheken übers Internet zu erreichen sind (ein Tunnel),
+    /// ohne `/` am Ende — die Adresse im Code für die Band.
+    pub public_url: Option<String>,
 }
 
 /// Die Bibliothek, um die es auf der Seite geht.
@@ -247,6 +270,8 @@ fn notice(code: &str) -> Option<&'static str> {
         "renamed" => "Umbenannt.",
         "token" => "Neuer Token. Geräte mit dem alten müssen sich neu verbinden.",
         "removed" => "Entfernt. Der Ordner mit den Songs bleibt in share.",
+        "band" => "Für die Band freigegeben.",
+        "unband" => "Freigabe beendet. Der Band-Token gilt nicht mehr.",
         _ => return None,
     })
 }
@@ -431,6 +456,8 @@ impl Ui {
             }
         };
 
+        let band = self.band_section(sel, &shown, chosen, now);
+
         let figures = match &shown.stats {
             None => String::new(),
             Some(st) => {
@@ -544,8 +571,82 @@ impl Ui {
             "{HEAD}<header><h1>Chordwright Data</h1><p class=\"muted\">{sub}</p></header>\n{banner}\
              <h2>Bibliotheken</h2>\n<div class=\"libs\">\n{cards}{create}\n</div>\n\
              <article>\n<h2>{}</h2>\n{chips}\n<div class=\"steps\">\n{steps}\n</div>\n\
-             <h3>Zahlen</h3>\n{figures}\n<h3>Verwalten</h3>\n{manage}\n</article>\n</main>\n</body>\n</html>\n",
+             <h3>Für die Band</h3>\n{band}\n<h3>Zahlen</h3>\n{figures}\n<h3>Verwalten</h3>\n{manage}\n</article>\n</main>\n</body>\n</html>\n",
             esc(&shown.name)
+        )
+    }
+
+    /// Die Freigabe für die Band: Code, Adresse und Token, wie lange sie
+    /// gilt, verlängern, beenden — oder das Formular, das sie anlegt.
+    fn band_section(&self, sel: &str, shown: &Shown, chosen: Option<&String>, now: i64) -> String {
+        let csrf = self.csrf();
+        let id = esc(sel);
+        let choices = |current: Option<u32>| -> String {
+            BAND_DAYS
+                .iter()
+                .map(|(d, label)| {
+                    let on = if Some(*d) == current { " selected" } else { "" };
+                    format!("<option value=\"{d}\"{on}>{label}</option>")
+                })
+                .collect()
+        };
+        let Some(band) = self.registry.band(sel) else {
+            return format!(
+                "<p class=\"muted\">Ein zweiter Token für deine Musiker: Songs, Sets und Abläufe lesen, der Bühne folgen — ändern kann er nichts.</p>\n\
+                 <form class=\"row\" method=\"post\" action=\"./\">{csrf}<input type=\"hidden\" name=\"do\" value=\"band\"><input type=\"hidden\" name=\"id\" value=\"{id}\">\
+                 <select name=\"days\" aria-label=\"Wie lange\">{}</select><button>Freigeben</button></form>",
+                choices(Some(7))
+            );
+        };
+        // Über den Tunnel, wenn es einen gibt; sonst nur im Heimnetz.
+        let server = match &self.panel.public_url {
+            Some(url) => Some(format!("{url}{}", shown.path)),
+            None => chosen.map(|a| {
+                format!(
+                    "{}{}",
+                    address_url(&self.panel.scheme, a, &self.panel.port),
+                    shown.path
+                )
+            }),
+        };
+        let state = match band.until {
+            None => "bis auf Widerruf".to_string(),
+            Some(until) => left(until, now),
+        };
+        let expired = band.expired(now);
+        let code = match &server {
+            None => String::new(),
+            Some(server) => {
+                let link = connect_link(server, &band.token);
+                let reach = if self.panel.public_url.is_some() {
+                    String::new()
+                } else {
+                    "<p class=\"note\">Nur im Heimnetz erreichbar. Für unterwegs einen Tunnel einrichten und seine Adresse unter <b>Konfiguration → public_url</b> eintragen (siehe Dokumentation).</p>\n  ".to_string()
+                };
+                format!(
+                    "<div class=\"steps\">\n<section>\n  {}\n  {reach}<p>Mit der Kamera scannen, oder in Chordwright unter <b>Einstellungen → Datenquelle → Server hinzufügen</b> „QR-Code scannen“.</p>\n  \
+                     <dl>\n    <dt>Adresse</dt><dd class=\"value\">{}</dd>\n    <dt>Token</dt><dd class=\"value\">{}</dd>\n  </dl>\n</section>\n</div>\n",
+                    qr_svg(&link, "QR-Code: Chordwright mit dieser Bibliothek verbinden, nur lesen"),
+                    esc(server),
+                    esc(&band.token)
+                )
+            }
+        };
+        format!(
+            "<p><b>{}</b> <span class=\"muted\">· liest Songs, Sets und Abläufe, folgt der Bühne, ändert nichts</span></p>\n{code}\
+             <div class=\"row\">\
+             <form class=\"row\" method=\"post\" action=\"./\">{csrf}<input type=\"hidden\" name=\"do\" value=\"band\"><input type=\"hidden\" name=\"id\" value=\"{id}\">\
+             <select name=\"days\" aria-label=\"Ab jetzt für\">{}</select><button class=\"quiet\" title=\"Der Token bleibt; verbundene Geräte bleiben verbunden\">{}</button></form>\
+             <form method=\"post\" action=\"./\" onsubmit=\"return confirm('Freigabe beenden? Die Band kommt mit ihrem Token nicht mehr hinein.')\">{csrf}<input type=\"hidden\" name=\"do\" value=\"unband\"><input type=\"hidden\" name=\"id\" value=\"{id}\">\
+             <button class=\"quiet danger\" title=\"Ein neuer Freigeben-Schritt erzeugt einen neuen Token\">Beenden</button></form>\
+             </div>",
+            if expired {
+                "Freigabe abgelaufen".to_string()
+            } else {
+                format!("Freigegeben, {state}")
+            },
+            choices(if band.until.is_none() { Some(0) } else { Some(7) }),
+            if expired { "Wieder freigeben" } else { "Verlängern" }
         )
     }
 
@@ -583,6 +684,17 @@ impl Ui {
             "token" => {
                 self.registry.new_token(&id).map_err(fail)?;
                 Ok(format!("?i={id}&m=token"))
+            }
+            "band" => {
+                let days = field("days").trim().parse::<u32>().unwrap_or(7).min(365);
+                self.registry
+                    .share_band(&id, days, now_ms())
+                    .map_err(fail)?;
+                Ok(format!("?i={id}&m=band"))
+            }
+            "unband" => {
+                self.registry.end_band(&id).map_err(fail)?;
+                Ok(format!("?i={id}&m=unband"))
             }
             "remove" => {
                 self.registry.remove(&id).map_err(fail)?;
@@ -646,7 +758,7 @@ const HEAD: &str = r#"<!doctype html>
   form { margin: 0; }
   .row { display: flex; flex-wrap: wrap; gap: 8px; margin: 0 0 10px; }
   .row input { flex: 1 1 200px; min-width: 0; }
-  input { font: inherit; padding: 8px 12px; min-height: 36px; border: 1px solid var(--line); border-radius: 8px; background: var(--bg); color: var(--fg); }
+  input, select { font: inherit; padding: 8px 12px; min-height: 36px; border: 1px solid var(--line); border-radius: 8px; background: var(--bg); color: var(--fg); }
   button { font: inherit; padding: 8px 16px; min-height: 36px; border: 1px solid var(--accent); border-radius: 999px; background: var(--accent); color: var(--bg); cursor: pointer; }
   button.quiet { background: transparent; color: var(--fg); border-color: var(--line); }
   button.danger { color: var(--danger); }

@@ -34,6 +34,18 @@ Eine Band, ein Chor, eine zum Ausprobieren: In der Web-UI legst du unter **Neue 
 
 Unter **Verwalten** benennst du eine Bibliothek um, gibst ihr einen neuen Token (danach muss sich jedes Gerät neu verbinden) oder entfernst sie. Entfernen löscht nichts: Der Ordner bleibt in share, und legst du wieder eine mit demselben Namen an, ist alles wieder da. Die Hauptbibliothek stellst du weiter unter **Konfiguration** ein.
 
+### Für die Band freigeben
+
+Deine Musiker sollen die Songs, Sets und Abläufe sehen und der Bühne folgen, aber nichts verändern? In der Web-UI unter **Für die Band** eine Dauer wählen (1 Tag bis bis auf Widerruf) und **Freigeben**. Die Bibliothek bekommt dann einen zweiten Token mit eigenem QR-Code:
+
+- **Lesen:** Songs, Sets, Abläufe, Einstellungen, letzte Änderungen.
+- **Bühne:** folgen und auch leiten.
+- **Nicht:** speichern, löschen, Sicherungen ansehen oder wiederherstellen. Der Server weist das ab (`403 read only`), gleich was die App versucht.
+
+**Verlängern** rückt nur das Ende; der Token bleibt, verbundene Geräte bleiben verbunden. Ist die Zeit um, kommt niemand mehr mit diesem Token hinein. **Beenden** nimmt die Freigabe sofort zurück; gibst du danach wieder frei, gibt es einen neuen Token. Dein eigener Token ändert sich dabei nie. Jede Bibliothek hat ihre eigene Freigabe.
+
+Ohne Tunnel zeigt der QR-Code die Adresse im Heimnetz. Für unterwegs: [Von unterwegs](#von-unterwegs-tunnel-mit-cloudflared).
+
 ### Was die Web-UI zeigt
 
 Oben jede Bibliothek mit Songs, Sets, gerade verbundenen Geräten und der letzten Änderung. Zur gewählten außerdem die Größe, die Sicherungen, die letzten Änderungen (wer was wann) und offene Bühnen samt dem, der gerade leitet.
@@ -83,8 +95,30 @@ Die Zertifizierungsstelle bleibt dieselbe, solange du das Add-on nicht deinstall
 | `backup_every_hours` | `24` | Alle so viele Stunden eine Sicherung, wenn sich etwas geändert hat. `0`: nur auf Knopfdruck |
 | `backup_keep` | `14` | So viele automatische Sicherungen bleiben |
 | `hostnames` | leer | Weitere Namen oder Adressen fürs Zertifikat, z. B. `ha.fritz.box` |
+| `tunnel` | aus | Zusätzlich http ohne Zertifikat auf Port 4175, für einen Tunnel (siehe [Von unterwegs](#von-unterwegs-tunnel-mit-cloudflared)) |
+| `public_url` | leer | Wo die Bibliothek über den Tunnel erreichbar ist, z. B. `https://songs.example.org`; steht im QR-Code für die Band |
 
 Den Port änderst du unter **Netzwerk**. In der App trägst du dann diesen Port ein.
+
+## Von unterwegs: Tunnel mit Cloudflared
+
+Damit die Band auch von zu Hause an die Bibliothek kommt, ohne Portfreigabe am Router: ein Tunnel zu Cloudflare. Du brauchst eine eigene Domain bei Cloudflare (kostenloser Tarif reicht).
+
+1. Das Add-on **Cloudflared** installieren (Repository `https://github.com/brenner-tobias/ha-addons`) und nach dessen Anleitung einmal mit deinem Cloudflare-Konto verbinden.
+2. Hier unter **Konfiguration**: `tunnel` einschalten und bei `public_url` die Adresse eintragen, unter der die Bibliothek draußen erreichbar sein soll, z. B. `https://songs.example.org`. Add-on neu starten. Es hört jetzt zusätzlich ohne https auf Port 4175 — die Verschlüsselung übernimmt der Tunnel.
+3. Im Cloudflared-Add-on unter **Konfiguration → additional_hosts**:
+
+   ```yaml
+   - hostname: songs.example.org
+     service: http://192.168.1.20:4175
+   ```
+
+   mit der IP-Adresse deines Home Assistant. Cloudflared neu starten; den DNS-Eintrag legt es selbst an.
+4. In der Web-UI unter **Für die Band** steht jetzt `https://songs.example.org` im QR-Code. Weitere Bibliotheken liegen darunter mit `/i/<name>`.
+
+Über den Tunnel gilt dein eigener Token genauso — du kannst dich also auch unterwegs mit vollen Rechten verbinden. Halte ihn deshalb für dich; der Band gibst du nur ihren. Beide sind lange Zufallszahlen, die sich nicht erraten lassen.
+
+Port 4175 ist im Heimnetz ohne https erreichbar. Willst du das nicht, stell ihn unter **Netzwerk** auf eine andere Nummer und trag die bei `service` ein; ohne Tunnel lass `tunnel` aus.
 
 ## Die Songs als Dateien
 

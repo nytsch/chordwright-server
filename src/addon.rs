@@ -11,6 +11,11 @@
 //!   installiert man einmal pro Gerät (sie liegt unter /ca.crt und in share) —
 //!   danach vertraut jeder Browser dem Server, auch eine App vom Home-Bildschirm.
 //!
+//! - Mit `tunnel` hört er zusätzlich ohne https auf 4175 — für einen Tunnel
+//!   wie das Cloudflared-Add-on, der https selbst macht und dem eigenen
+//!   Zertifikat nicht traut. `public_url` ist dann die Adresse von draußen;
+//!   die Web-UI zeigt sie im Code für die Band (siehe DOCS.md).
+//!
 //! Die Pfade sind über Umgebungsvariablen umbiegbar — für docker compose und
 //! die Tests.
 
@@ -26,6 +31,19 @@ use serde_json::Value;
 
 /// Namen, die jedes Zertifikat trägt — die üblichen Adressen eines Home Assistant.
 const DEFAULT_NAMES: [&str; 3] = ["homeassistant.local", "homeassistant", "localhost"];
+
+/// Der Port ohne https für einen Tunnel (Option `tunnel`).
+const TUNNEL_PORT: u16 = 4175;
+
+/// `https://songs.example.org/` → `https://songs.example.org`; anderes als
+/// eine http(s)-Adresse gilt nicht.
+fn public_url(value: &Value) -> Option<String> {
+    let url = value.as_str()?.trim().trim_end_matches('/');
+    let rest = url
+        .strip_prefix("https://")
+        .or_else(|| url.strip_prefix("http://"))?;
+    (!rest.is_empty() && !rest.contains(char::is_whitespace)).then(|| url.to_string())
+}
 
 fn env_or(name: &str, fallback: &str) -> String {
     std::env::var(name)
@@ -213,6 +231,8 @@ pub fn options() -> Result<Addon, String> {
         .to_string();
     let dir = share.join(&folder);
     let (token, generated) = resolve_token(options["token"].as_str(), &data)?;
+    let public = public_url(&options["public_url"]);
+    let tunnel = options["tunnel"] == Value::Bool(true);
     let ips = host_addresses();
     let outside = host_port(port);
 
@@ -325,6 +345,12 @@ pub fn options() -> Result<Addon, String> {
     if tls.is_none() {
         println!("  Ohne ssl erreicht die App auf einer https-Seite den Server nicht.");
     }
+    if tunnel {
+        println!("  Tunnel   http://<Adresse>:{TUNNEL_PORT}   (ohne https, nur für den Tunnel)");
+    }
+    if let Some(url) = &public {
+        println!("  Von draußen  {url}");
+    }
     println!("In der App: Einstellungen → Datenquelle → Adresse (ohne /api) und Token eintragen.");
     if in_home_assistant {
         println!(
@@ -352,6 +378,7 @@ pub fn options() -> Result<Addon, String> {
             own_ca: own.is_some(),
             folder: folder.clone(),
             samba: in_home_assistant,
+            public_url: public.clone(),
         };
         Some((ingress_port, panel))
     } else {
@@ -379,6 +406,7 @@ pub fn options() -> Result<Addon, String> {
         cert,
         key,
         ca_file,
+        plain_port: tunnel.then_some(TUNNEL_PORT),
         backup_every: every.unwrap_or(defaults.backup_every),
         backup_keep: keep.map(|k| k as usize).unwrap_or(defaults.backup_keep),
         ..defaults

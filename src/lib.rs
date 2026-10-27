@@ -16,6 +16,12 @@
 //! to `https://host:4174/i/<id>` as to any server — it only ever appends
 //! `/api/…` to the address. The Home Assistant add-on manages them from its
 //! web UI (src/instances.rs).
+//!
+//! Each library can also be opened with a second token, the band's (`Band`):
+//! it reads everything and plays along on the shared stage, but writes
+//! nothing — so a library can be handed to the musicians, also over a tunnel
+//! from the internet, without anyone rearranging the songs. It ends when its
+//! time is up or when it is taken back (`Hub::set_band`).
 
 mod backups;
 mod certs;
@@ -86,6 +92,8 @@ pub struct Options {
     pub site: Option<Site>,
     /// A browser that types this code gets a guest token (pairing.rs).
     pub pairing: Option<String>,
+    /// A second token that reads but does not write.
+    pub band: Option<Band>,
     /// A snapshot this often (hours) when something changed; 0 never.
     pub backup_every: f64,
     /// How many scheduled snapshots stay.
@@ -109,9 +117,25 @@ impl Default for Options {
             plain_port: None,
             site: None,
             pairing: None,
+            band: None,
             backup_every: 24.0,
             backup_keep: 14,
         }
+    }
+}
+
+/// The band's way into a library: everything to read, the shared stage to
+/// lead and follow, nothing to write — no record, no backup.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, serde::Deserialize)]
+pub struct Band {
+    pub token: String,
+    /// When it ends, ms since the epoch; None: until it is taken back.
+    pub until: Option<i64>,
+}
+
+impl Band {
+    pub fn expired(&self, now: i64) -> bool {
+        self.until.is_some_and(|u| now >= u)
     }
 }
 
@@ -324,6 +348,30 @@ impl Hub {
     /// Stops serving `/i/<id>`. Its folder stays as it is.
     pub fn remove(&self, id: &str) -> bool {
         self.instances_mut().remove(id).is_some()
+    }
+
+    /// Opens `/i/<id>` (None: the server's own library) to the band, with a
+    /// new token or a new end — or closes it again (None). The band's open
+    /// event streams end either way and reconnect with what holds now.
+    /// False when there is no such library.
+    pub fn set_band(&self, id: Option<&str>, band: Option<Band>) -> bool {
+        let shared = match id {
+            None => self.0.main.clone(),
+            Some(id) => match self.instances().get(id) {
+                Some(i) => i.shared.clone(),
+                None => return false,
+            },
+        };
+        shared.set_band(band);
+        true
+    }
+
+    /// Who besides the owner may read `/i/<id>` (None: the server's own).
+    pub fn band(&self, id: Option<&str>) -> Option<Band> {
+        match id {
+            None => self.0.main.band(),
+            Some(id) => self.instances().get(id)?.shared.band(),
+        }
     }
 
     pub fn ids(&self) -> Vec<String> {
@@ -550,6 +598,7 @@ fn start(mut o: Options) -> Result<Server, String> {
             .filter(|c| !c.is_empty())
             .map(pairing::Pairing::new),
     )?;
+    shared.set_band(o.band.clone().filter(|b| !b.token.is_empty()));
 
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .worker_threads(2)
@@ -672,6 +721,7 @@ fn library_state(
         store,
         backups: Backups::new(&root, backup_keep),
         journal: Journal::open(&root),
+        band: RwLock::new(None),
         stage: Stage::new(move |snapshot| stage_listeners.send(http::stage_line(&snapshot))),
         listeners,
         self_writes: Mutex::new(HashMap::new()),

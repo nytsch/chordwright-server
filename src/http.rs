@@ -9,7 +9,7 @@
 //!   PUT    /api/:db/record/:key    → body is the raw value string
 //!   DELETE /api/:db/record/:key
 //!   GET    /api/events             → SSE: {"db","key","client"} on every change, `event: stage` for the stage
-//!   GET    /api/health             → { ok, databases, dir, watching, revisions, backups, changes, stage }
+//!   GET    /api/health             → { ok, databases, dir, watching, revisions, backups, changes, stage, pairing }, with a token also { access }
 //!   GET    /api/changes?limit=50   → { changes: [...] }, newest first
 //!   GET    /api/changes?db=&key=   → { change }
 //!   GET    /api/time               → { now }
@@ -29,6 +29,10 @@
 //!   GET    /*                      → the app, when the server was given one (site.rs)
 //! ```
 //!
+//! The band's token (`Band`) opens the same routes to read, and the stage;
+//! a write or anything under /api/backups is 403 `read only`, and once its
+//! time is up every route is 401 `expired`.
+//!
 //! PUT and DELETE take `If-Match: "<rev>"` or `If-None-Match: *`; when the
 //! record is no longer what the writer saw, nothing changes and the answer is
 //! 412 with what is there now.
@@ -38,7 +42,7 @@ use std::convert::Infallible;
 use std::path::PathBuf;
 use std::pin::Pin;
 use std::sync::atomic::{AtomicI64, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, RwLock};
 use std::task::{Context, Poll};
 use std::time::{Duration, Instant};
 
@@ -57,26 +61,49 @@ use crate::site::{self, Site};
 use crate::stage::{clean_room, Answer, Stage};
 use crate::store::{is_database, is_valid_key, key_for_path, Expect, Outcome, Store, DATABASES};
 use crate::util::{decode_component, now_ms, number, parse_query};
+use crate::Band;
 
 pub type Body = BoxBody<Bytes, Infallible>;
 
+/// One open /api/events stream.
+struct Listener {
+    tx: mpsc::UnboundedSender<Bytes>,
+    /// The band's: when its access ends (i64::MAX: when it is taken back).
+    /// None: the owner's.
+    band_until: Option<i64>,
+}
+
 /// Everyone listening on /api/events.
 #[derive(Default)]
-pub struct Listeners(Mutex<Vec<mpsc::UnboundedSender<Bytes>>>);
+pub struct Listeners(Mutex<Vec<Listener>>);
 
 impl Listeners {
     pub fn send(&self, text: String) {
         let bytes = Bytes::from(text);
+        let now = now_ms();
         let mut all = self.0.lock().unwrap_or_else(|e| e.into_inner());
-        // A listener that went away is noticed here, at the next line for it.
-        all.retain(|tx| tx.send(bytes.clone()).is_ok());
+        // A listener that went away is noticed here, at the next line for it;
+        // a band whose time is up, too.
+        all.retain(|l| l.band_until.is_none_or(|u| now < u) && l.tx.send(bytes.clone()).is_ok());
     }
 
-    fn add(&self) -> mpsc::UnboundedReceiver<Bytes> {
+    fn add(&self, band: Option<&Band>) -> mpsc::UnboundedReceiver<Bytes> {
         let (tx, rx) = mpsc::unbounded_channel();
         let _ = tx.send(Bytes::from_static(b": connected\n\n"));
-        self.0.lock().unwrap_or_else(|e| e.into_inner()).push(tx);
+        let band_until = band.map(|b| b.until.unwrap_or(i64::MAX));
+        self.0
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .push(Listener { tx, band_until });
         rx
+    }
+
+    /// Ends the band's streams; an app connects again and learns what holds now.
+    fn drop_band(&self) {
+        self.0
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .retain(|l| l.band_until.is_none());
     }
 
     pub fn count(&self) -> usize {
@@ -84,7 +111,7 @@ impl Listeners {
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .iter()
-            .filter(|tx| !tx.is_closed())
+            .filter(|l| !l.tx.is_closed())
             .count()
     }
 }
@@ -110,6 +137,8 @@ pub struct Shared {
     pub ca_der: Option<Vec<u8>>,
     pub site: Option<Site>,
     pub pairing: Option<Pairing>,
+    /// The second token: reads, writes nothing (`Band`).
+    pub band: RwLock<Option<Band>>,
     pub store: Store,
     pub backups: Backups,
     pub journal: Journal,
@@ -127,7 +156,50 @@ pub struct Shared {
 /// hand is not mistaken for this client's own write.
 const SELF_WRITE_WINDOW: Duration = Duration::from_secs(1);
 
+/// What a request may do.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Access {
+    /// The library's token, a paired browser, or no token at all.
+    Owner,
+    /// The band's: read and the stage.
+    Band,
+}
+
 impl Shared {
+    pub fn band(&self) -> Option<Band> {
+        self.band.read().unwrap_or_else(|e| e.into_inner()).clone()
+    }
+
+    pub fn set_band(&self, band: Option<Band>) {
+        *self.band.write().unwrap_or_else(|e| e.into_inner()) = band;
+        self.listeners.drop_band();
+    }
+
+    /// Who `given` is: Ok(None) nobody, Err(()) the band after its time.
+    fn access(&self, given: &str) -> Result<Option<(Access, Option<Band>)>, ()> {
+        if self.token.is_empty() || given == self.token {
+            return Ok(Some((Access::Owner, None)));
+        }
+        // A guest only while pairing is on with the same code.
+        if self
+            .pairing
+            .as_ref()
+            .is_some_and(|p| p.admits(&self.token, given))
+        {
+            return Ok(Some((Access::Owner, None)));
+        }
+        match self.band() {
+            Some(band) if !given.is_empty() && band.token == given => {
+                if band.expired(now_ms()) {
+                    Err(())
+                } else {
+                    Ok(Some((Access::Band, Some(band))))
+                }
+            }
+            _ => Ok(None),
+        }
+    }
+
     pub fn self_write(&self, stamp: &str) -> Option<Option<String>> {
         let writes = self.self_writes.lock().unwrap_or_else(|e| e.into_inner());
         writes
@@ -297,10 +369,12 @@ async fn route(s: Arc<Shared>, req: Request<Incoming>) -> Response<Body> {
             .and_then(|site| site::respond(site, &path, method == Method::HEAD));
         return page.unwrap_or_else(|| error(404, "not found"));
     }
+    let given = header(req.headers(), "authorization")
+        .and_then(|h| h.strip_prefix("Bearer ").map(String::from))
+        .or_else(|| param("token"))
+        .unwrap_or_default();
     if part(1) == Some("health") {
-        return send(
-            200,
-            json!({
+        let mut health = json!({
                 "ok": true,
                 "databases": DATABASES,
                 "dir": s.root.to_string_lossy(),
@@ -310,30 +384,34 @@ async fn route(s: Arc<Shared>, req: Request<Incoming>) -> Response<Body> {
                 "changes": true,
                 "stage": true,
                 "pairing": s.pairing.is_some(),
-            }),
-        );
+        });
+        // With a token, what it may do — so an app with the band's knows not to write.
+        if !given.is_empty() {
+            health["access"] = match s.access(&given) {
+                Ok(Some((Access::Owner, _))) => json!("owner"),
+                Ok(Some((Access::Band, band))) => {
+                    health["until"] = json!(band.and_then(|b| b.until));
+                    json!("band")
+                }
+                Ok(None) => json!("none"),
+                Err(()) => json!("expired"),
+            };
+        }
+        return send(200, health);
     }
     if part(1) == Some("pair") && parts.len() == 2 {
         return pair(&s, req).await;
     }
-    if !s.token.is_empty() {
-        let given = header(req.headers(), "authorization")
-            .and_then(|h| h.strip_prefix("Bearer ").map(String::from))
-            .or_else(|| param("token"))
-            .unwrap_or_default();
-        // A guest only while pairing is on with the same code.
-        let guest = s
-            .pairing
-            .as_ref()
-            .is_some_and(|p| p.admits(&s.token, &given));
-        if given != s.token && !guest {
-            return error(401, "unauthorised");
-        }
-    }
+    let (access, band) = match s.access(&given) {
+        Ok(Some(who)) => who,
+        Ok(None) => return error(401, "unauthorised"),
+        Err(()) => return error(401, "expired"),
+    };
+    let read_only = || error(403, "read only");
 
     match part(1) {
         Some("events") => {
-            let rx = s.listeners.add();
+            let rx = s.listeners.add(band.as_ref());
             return Response::builder()
                 .status(200)
                 .header("content-type", "text/event-stream")
@@ -346,6 +424,7 @@ async fn route(s: Arc<Shared>, req: Request<Incoming>) -> Response<Body> {
             return send(200, json!({ "now": now_ms() }))
         }
         Some("stage") => return stage(&s, req, &parts[2..]).await,
+        Some("backups") if access == Access::Band => return read_only(),
         Some("backups") => return backups(&s, req, &parts[2..]).await,
         Some("changes") if parts.len() == 2 && method == Method::GET => {
             let (db, key) = (param("db"), param("key"));
@@ -418,6 +497,9 @@ async fn route(s: Arc<Shared>, req: Request<Incoming>) -> Response<Body> {
         };
     }
 
+    if (method == Method::PUT || method == Method::DELETE) && access == Access::Band {
+        return read_only();
+    }
     if method == Method::PUT || method == Method::DELETE {
         let stamp = format!("{db}/{key}");
         s.self_writes

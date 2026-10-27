@@ -21,8 +21,10 @@ panel_icon: mdi:qrcode
 panel_title: Chordwright
 ports:
   4174/tcp: 4174
+  4175/tcp: 4175
 ports_description:
   4174/tcp: Chordwright-Server (in der App unter Einstellungen → Datenquelle)
+  4175/tcp: Ohne https, nur für einen Tunnel (Option tunnel)
 map:
   # Die Songs liegen unter /share/<ordner> — per Samba sichtbar und editierbar.
   - type: share
@@ -43,6 +45,11 @@ options:
   backup_every_hours: 24
   # So viele automatische Sicherungen bleiben; die ältesten gehen.
   backup_keep: 14
+  # Für die Band von unterwegs: zusätzlich http auf 4175 für einen Tunnel wie
+  # das Cloudflared-Add-on, und die Adresse, unter der er draußen erreichbar
+  # ist (z. B. https://songs.example.org). Siehe Dokumentation.
+  tunnel: false
+  public_url: ""
 schema:
   token: password?
   ssl: bool
@@ -53,3 +60,5 @@ schema:
     - str
   backup_every_hours: int(0,)
   backup_keep: int(1,)
+  tunnel: bool?
+  public_url: str?
