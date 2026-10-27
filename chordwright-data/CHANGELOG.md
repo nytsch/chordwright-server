@@ -2,9 +2,9 @@
 
 ## Unveröffentlicht
 
-- Für die Band freigeben: In der Web-UI bekommt jede Bibliothek auf Wunsch einen zweiten Token mit eigenem QR-Code, befristet (1 Tag bis 30 Tage) oder bis auf Widerruf. Er liest Songs, Sets und Abläufe und spielt auf der gemeinsamen Bühne mit, schreibt aber nichts — keine Songs, keine Abläufe, keine Sicherungen. Verlängern behält den Token, Beenden sperrt ihn sofort.
-- Von unterwegs über einen Tunnel: Mit `tunnel` hört der Server zusätzlich ohne https auf Port 4175, etwa für das Cloudflared-Add-on; `public_url` ist die Adresse von draußen und steht im QR-Code für die Band. Anleitung in der Dokumentation.
-- `/api/health` sagt mit einem Token, was er darf (`access`: `owner`, `band`, `expired`, `none`; bei der Band `until`).
+- Die Band: In der Web-UI bekommt jede Bibliothek eine Liste ihrer Musiker, jeder mit Rollen (D, P, A, E, B, S) und eigenem Zugang samt QR-Code, befristet (1 Tag bis 30 Tage) oder bis auf Widerruf. Ein Musiker liest Songs, Sets und Abläufe, spielt auf der gemeinsamen Bühne mit und trägt ein, wann er kann — sonst schreibt er nichts. Verlängern behält den Zugang, Von der Liste nehmen sperrt ihn sofort.
+- Von unterwegs über einen Tunnel: Mit `tunnel` hört der Server zusätzlich ohne https auf Port 4175, etwa für das Cloudflared-Add-on; `public_url` ist die Adresse von draußen und steht in den QR-Codes der Musiker. Anleitung in der Dokumentation.
+- `/api/health` sagt mit einem Token, was er darf (`access`: `owner`, `member`, `expired`, `none`; beim Musiker `member` und `until`), `/api/band` nennt die Musiker mit ihren Rollen.
 
 ## 2.1.0
 

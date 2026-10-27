@@ -34,15 +34,16 @@ Eine Band, ein Chor, eine zum Ausprobieren: In der Web-UI legst du unter **Neue 
 
 Unter **Verwalten** benennst du eine Bibliothek um, gibst ihr einen neuen Token (danach muss sich jedes Gerät neu verbinden) oder entfernst sie. Entfernen löscht nichts: Der Ordner bleibt in share, und legst du wieder eine mit demselben Namen an, ist alles wieder da. Die Hauptbibliothek stellst du weiter unter **Konfiguration** ein.
 
-### Für die Band freigeben
+### Die Band: ein Zugang pro Musiker
 
-Deine Musiker sollen die Songs, Sets und Abläufe sehen und der Bühne folgen, aber nichts verändern? In der Web-UI unter **Für die Band** eine Dauer wählen (1 Tag bis bis auf Widerruf) und **Freigeben**. Die Bibliothek bekommt dann einen zweiten Token mit eigenem QR-Code:
+Deine Musiker sollen Songs, Sets und Abläufe sehen, der Bühne folgen und eintragen, an welchem Sonntag sie können, aber nichts verändern? In der Web-UI unter **Band** einen Namen eintragen, die Rollen anhaken (**D** Drum, **P** Piano, **A** A-Git, **E** E-Git, **B** Bass, **S** Singer), eine Dauer wählen (1 Tag bis bis auf Widerruf) und **Aufnehmen**. Jeder Musiker bekommt einen eigenen Zugang mit eigenem QR-Code.
 
-- **Lesen:** Songs, Sets, Abläufe, Einstellungen, letzte Änderungen.
+- **Lesen:** Songs, Sets, Abläufe, Einstellungen, letzte Änderungen, wer mit welchen Rollen dabei ist.
 - **Bühne:** folgen und auch leiten.
-- **Nicht:** speichern, löschen, Sicherungen ansehen oder wiederherstellen. Der Server weist das ab (`403 read only`), gleich was die App versucht.
+- **Schreiben:** nur die eigenen Antworten, wann er kann (`share/chordwright/user/availability.<name>.json`), und zwar unter seinem Namen.
+- **Nicht:** Songs, Abläufe, Sets oder Einstellungen ändern, löschen, Sicherungen ansehen oder wiederherstellen. Der Server weist das ab (`403 read only`), gleich was die App versucht.
 
-**Verlängern** rückt nur das Ende; der Token bleibt, verbundene Geräte bleiben verbunden. Ist die Zeit um, kommt niemand mehr mit diesem Token hinein. **Beenden** nimmt die Freigabe sofort zurück; gibst du danach wieder frei, gibt es einen neuen Token. Dein eigener Token ändert sich dabei nie. Jede Bibliothek hat ihre eigene Freigabe.
+Tipp auf einen Namen zeigt seinen QR-Code. Dort änderst du Name und Rollen, **Verlängern** rückt nur das Ende (der Zugang bleibt, verbundene Geräte bleiben verbunden), **Von der Liste nehmen** sperrt ihn sofort; seine Antworten bleiben im Ordner. Ist die Zeit um, kommt niemand mehr mit diesem Zugang hinein. Dein eigener Token ändert sich dabei nie. Jede Bibliothek hat ihre eigenen Musiker.
 
 Ohne Tunnel zeigt der QR-Code die Adresse im Heimnetz. Für unterwegs: [Von unterwegs](#von-unterwegs-tunnel-mit-cloudflared).
 
@@ -96,7 +97,7 @@ Die Zertifizierungsstelle bleibt dieselbe, solange du das Add-on nicht deinstall
 | `backup_keep` | `14` | So viele automatische Sicherungen bleiben |
 | `hostnames` | leer | Weitere Namen oder Adressen fürs Zertifikat, z. B. `ha.fritz.box` |
 | `tunnel` | aus | Zusätzlich http ohne Zertifikat auf Port 4175, für einen Tunnel (siehe [Von unterwegs](#von-unterwegs-tunnel-mit-cloudflared)) |
-| `public_url` | leer | Wo die Bibliothek über den Tunnel erreichbar ist, z. B. `https://songs.example.org`; steht im QR-Code für die Band |
+| `public_url` | leer | Wo die Bibliothek über den Tunnel erreichbar ist, z. B. `https://songs.example.org`; steht in den QR-Codes der Musiker |
 
 Den Port änderst du unter **Netzwerk**. In der App trägst du dann diesen Port ein.
 
@@ -114,9 +115,9 @@ Damit die Band auch von zu Hause an die Bibliothek kommt, ohne Portfreigabe am R
    ```
 
    mit der IP-Adresse deines Home Assistant. Cloudflared neu starten; den DNS-Eintrag legt es selbst an.
-4. In der Web-UI unter **Für die Band** steht jetzt `https://songs.example.org` im QR-Code. Weitere Bibliotheken liegen darunter mit `/i/<name>`.
+4. In der Web-UI unter **Band** steht jetzt `https://songs.example.org` in den QR-Codes der Musiker. Weitere Bibliotheken liegen darunter mit `/i/<name>`.
 
-Über den Tunnel gilt dein eigener Token genauso — du kannst dich also auch unterwegs mit vollen Rechten verbinden. Halte ihn deshalb für dich; der Band gibst du nur ihren. Beide sind lange Zufallszahlen, die sich nicht erraten lassen.
+Über den Tunnel gilt dein eigener Token genauso — du kannst dich also auch unterwegs mit vollen Rechten verbinden. Halte ihn deshalb für dich; jeder Musiker bekommt nur seinen. Beide sind lange Zufallszahlen, die sich nicht erraten lassen.
 
 Port 4175 ist im Heimnetz ohne https erreichbar. Willst du das nicht, stell ihn unter **Netzwerk** auf eine andere Nummer und trag die bei `service` ein; ohne Tunnel lass `tunnel` aus.
 

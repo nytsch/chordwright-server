@@ -14,7 +14,7 @@
 //! - Mit `tunnel` hört er zusätzlich ohne https auf 4175 — für einen Tunnel
 //!   wie das Cloudflared-Add-on, der https selbst macht und dem eigenen
 //!   Zertifikat nicht traut. `public_url` ist dann die Adresse von draußen;
-//!   die Web-UI zeigt sie im Code für die Band (siehe DOCS.md).
+//!   die Web-UI zeigt sie in den Codes der Musiker (siehe DOCS.md).
 //!
 //! Die Pfade sind über Umgebungsvariablen umbiegbar — für docker compose und
 //! die Tests.

@@ -17,11 +17,13 @@
 //! `/api/…` to the address. The Home Assistant add-on manages them from its
 //! web UI (src/instances.rs).
 //!
-//! Each library can also be opened with a second token, the band's (`Band`):
-//! it reads everything and plays along on the shared stage, but writes
-//! nothing — so a library can be handed to the musicians, also over a tunnel
-//! from the internet, without anyone rearranging the songs. It ends when its
-//! time is up or when it is taken back (`Hub::set_band`).
+//! Each library can also be opened by its musicians (`Member`), each with a
+//! token of their own: they read everything and play along on the shared
+//! stage, but the only record they write is their own answers — when they can
+//! play (`user/availability.<id>`). So a library can be handed to the band,
+//! also over a tunnel from the internet, without anyone rearranging the
+//! songs. A musician's access ends when its time is up or when they are taken
+//! off the list (`Hub::set_members`).
 
 mod backups;
 mod certs;
@@ -92,8 +94,8 @@ pub struct Options {
     pub site: Option<Site>,
     /// A browser that types this code gets a guest token (pairing.rs).
     pub pairing: Option<String>,
-    /// A second token that reads but does not write.
-    pub band: Option<Band>,
+    /// The musicians, each with a token that reads and writes only their answers.
+    pub members: Vec<Member>,
     /// A snapshot this often (hours) when something changed; 0 never.
     pub backup_every: f64,
     /// How many scheduled snapshots stay.
@@ -117,25 +119,48 @@ impl Default for Options {
             plain_port: None,
             site: None,
             pairing: None,
-            band: None,
+            members: Vec::new(),
             backup_every: 24.0,
             backup_keep: 14,
         }
     }
 }
 
-/// The band's way into a library: everything to read, the shared stage to
-/// lead and follow, nothing to write — no record, no backup.
+/// What a musician plays, by letter: drums, piano, acoustic and electric
+/// guitar, bass, singer.
+pub const ROLES: [(&str, &str); 6] = [
+    ("D", "Drum"),
+    ("P", "Piano"),
+    ("A", "A-Git"),
+    ("E", "E-Git"),
+    ("B", "Bass"),
+    ("S", "Singer"),
+];
+
+/// A musician's way into a library: everything to read, the shared stage to
+/// lead and follow, and one record to write — their own answers.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, serde::Deserialize)]
-pub struct Band {
+pub struct Member {
+    /// Like an instance id (`is_instance_id`); names their answers' record.
+    pub id: String,
+    pub name: String,
     pub token: String,
-    /// When it ends, ms since the epoch; None: until it is taken back.
+    /// Letters from `ROLES`.
+    #[serde(default)]
+    pub roles: Vec<String>,
+    /// When the access ends, ms since the epoch; None: until taken back.
+    #[serde(default)]
     pub until: Option<i64>,
 }
 
-impl Band {
+impl Member {
     pub fn expired(&self, now: i64) -> bool {
         self.until.is_some_and(|u| now >= u)
+    }
+
+    /// The one record they may write: `user/<this>`.
+    pub fn answers_key(&self) -> String {
+        format!("availability.{}", self.id)
     }
 }
 
@@ -350,11 +375,10 @@ impl Hub {
         self.instances_mut().remove(id).is_some()
     }
 
-    /// Opens `/i/<id>` (None: the server's own library) to the band, with a
-    /// new token or a new end — or closes it again (None). The band's open
-    /// event streams end either way and reconnect with what holds now.
+    /// The musicians of `/i/<id>` (None: the server's own library) from now
+    /// on. Their open event streams end and reconnect with what holds now.
     /// False when there is no such library.
-    pub fn set_band(&self, id: Option<&str>, band: Option<Band>) -> bool {
+    pub fn set_members(&self, id: Option<&str>, members: Vec<Member>) -> bool {
         let shared = match id {
             None => self.0.main.clone(),
             Some(id) => match self.instances().get(id) {
@@ -362,15 +386,15 @@ impl Hub {
                 None => return false,
             },
         };
-        shared.set_band(band);
+        shared.set_members(members);
         true
     }
 
-    /// Who besides the owner may read `/i/<id>` (None: the server's own).
-    pub fn band(&self, id: Option<&str>) -> Option<Band> {
+    /// The musicians of `/i/<id>` (None: the server's own).
+    pub fn members(&self, id: Option<&str>) -> Option<Vec<Member>> {
         match id {
-            None => self.0.main.band(),
-            Some(id) => self.instances().get(id)?.shared.band(),
+            None => Some(self.0.main.members()),
+            Some(id) => Some(self.instances().get(id)?.shared.members()),
         }
     }
 
@@ -598,7 +622,7 @@ fn start(mut o: Options) -> Result<Server, String> {
             .filter(|c| !c.is_empty())
             .map(pairing::Pairing::new),
     )?;
-    shared.set_band(o.band.clone().filter(|b| !b.token.is_empty()));
+    shared.set_members(o.members.clone());
 
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .worker_threads(2)
@@ -721,7 +745,7 @@ fn library_state(
         store,
         backups: Backups::new(&root, backup_keep),
         journal: Journal::open(&root),
-        band: RwLock::new(None),
+        members: RwLock::new(Vec::new()),
         stage: Stage::new(move |snapshot| stage_listeners.send(http::stage_line(&snapshot))),
         listeners,
         self_writes: Mutex::new(HashMap::new()),

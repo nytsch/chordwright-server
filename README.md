@@ -143,7 +143,7 @@ wrote it.
 | `--loopback-port` | none | also plain http on `127.0.0.1` at this port (`0` = any) — for the program that started the server |
 | `--plain-port` | none | also plain http on `--host` at this port (`0` = any) — for a browser without the CA; the token crosses the network unencrypted |
 | `--site` | none | a folder served under `/` (the app for a browser); unknown paths without a dot get its `index.html` |
-| `--band-token` | none | a second token that reads and joins the stage but writes nothing (see [The band](#the-band)) |
+| `--members` | none | a JSON file with the musicians, `[{ id, name, token, roles, until }]` (see [The band](#the-band)) |
 | `--pairing` | none | a code (or `auto` for six random digits) a browser trades for a guest token at `POST /api/pair` |
 
 `--port 0` lets the system pick a free port; `--ready-json` says which.
@@ -266,21 +266,30 @@ It is a label, not an account: whoever holds the token can write under any name.
 
 ## The band
 
-A library can be opened with a second token, the band's: it reads every
-record, follows the change stream and plays along on the shared stage (lead
-and follow), but any `PUT` or `DELETE` of a record and anything under
-`/api/backups` is `403 { error: "read only" }`. It can end at a given time,
-after which every route answers `401 { error: "expired" }`; taking it back
-answers `401 unauthorised`. Either way the band's open event streams end.
+A library can be opened by its musicians, each with a token of their own
+(`Member { id, name, token, roles, until }`). A musician reads every record,
+follows the change stream and plays along on the shared stage (lead and
+follow), and writes exactly one record: their own answers,
+`user/availability.<id>`, always under their own name in the change journal.
+Any other `PUT` or `DELETE`, and anything under `/api/backups`, is
+`403 { error: "read only" }`. Their access can end at a given time, after
+which every route answers `401 { error: "expired" }`; taking them off the list
+answers `401 unauthorised`. Either way their open event streams end.
 
-From the command line `--band-token <t>` (no end); from Rust
-`Options { band: Some(Band { token, until }) }` or, while it runs,
-`server.hub().set_band(id, band)`. The Home Assistant add-on sets it per
-library from its web UI and keeps it across restarts.
+`roles` are letters: `D` drum, `P` piano, `A` acoustic guitar, `E` electric
+guitar, `B` bass, `S` singer.
 
-`GET /api/health` with a token says what it may do: `access` is `owner`,
-`band` (with `until`, ms since the epoch or null), `expired` or `none`. An app
-holding the band's token should not try to write.
+```
+GET    /api/band    → { roles: [{ id, name }], members: [{ id, name, roles }], me: id | null }
+```
+
+No token ever leaves the server this way. `GET /api/health` with a token says
+what it may do: `access` is `owner`, `member` (with `member: { id, name,
+roles }` and `until`, ms since the epoch or null), `expired` or `none`.
+
+From the command line `--members <file.json>`; from Rust `Options { members, … }`
+or, while it runs, `server.hub().set_members(id, members)`. The Home Assistant
+add-on keeps them per library, edited in its web UI, across restarts.
 
 ## Backups
 
