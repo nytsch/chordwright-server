@@ -330,6 +330,7 @@ impl Ui {
         pick: usize,
         message: Option<&str>,
         error: Option<&str>,
+        to_band: bool,
     ) -> String {
         let now = now_ms();
         let entries = self.registry.list();
@@ -609,6 +610,16 @@ impl Ui {
             (None, Some(m)) => format!("<p class=\"banner\" role=\"status\">{}</p>\n", esc(m)),
             _ => String::new(),
         };
+        // Zur Band hinunter — mit einem Skript statt `#band`: unter Ingress
+        // liegt die Seite in einem Iframe auf derselben Adresse wie Home
+        // Assistant, und ein Sprung zum Anker scrollt auch dessen Seite mit;
+        // der Iframe rutscht aus dem Bild, es bleibt schwarz. `scrollTo`
+        // bewegt nur dieses Fenster.
+        let scroll = if to_band {
+            "<script>addEventListener('load',()=>{const b=document.getElementById('band');if(b)scrollTo(0,b.getBoundingClientRect().top+scrollY-16)})</script>\n"
+        } else {
+            ""
+        };
         let sub = format!(
             "Version {} · {} · {}",
             env!("CARGO_PKG_VERSION"),
@@ -620,7 +631,7 @@ impl Ui {
             "{HEAD}<header><h1>Chordwright Data</h1><p class=\"muted\">{sub}</p></header>\n{banner}\
              <h2>Bibliotheken</h2>\n<div class=\"libs\">\n{cards}{create}\n</div>\n\
              <article>\n<h2>{}</h2>\n{chips}\n<div class=\"steps\">\n{steps}\n</div>\n\
-             <h3 id=\"band\">Band</h3>\n{band}\n<h3>Zahlen</h3>\n{figures}\n<h3>Verwalten</h3>\n{manage}\n</article>\n</main>\n</body>\n</html>\n",
+             <h3 id=\"band\">Band</h3>\n{band}\n<h3>Zahlen</h3>\n{figures}\n<h3>Verwalten</h3>\n{manage}\n</article>\n</main>\n{scroll}</body>\n</html>\n",
             esc(&shown.name)
         )
     }
@@ -693,7 +704,7 @@ impl Ui {
                     format!(" · {}", m.can.label())
                 };
                 format!(
-                    "<li><a class=\"who\" href=\"?i={id}&amp;p={}#band\"{current}>{}</a> {letters} <span class=\"muted\">· {}{can}</span></li>",
+                    "<li><a class=\"who\" href=\"?i={id}&amp;p={}&amp;to=band\"{current}>{}</a> {letters} <span class=\"muted\">· {}{can}</span></li>",
                     esc(&m.id),
                     esc(&m.name),
                     state(m)
@@ -818,7 +829,7 @@ impl Ui {
                         now_ms(),
                     )
                     .map_err(fail)?;
-                Ok(format!("?i={id}&p={}&m=member#band", m.id))
+                Ok(format!("?i={id}&p={}&m=member&to=band", m.id))
             }
             "member-edit" => {
                 self.registry
@@ -830,17 +841,17 @@ impl Ui {
                         Can::parse(&field("can")),
                     )
                     .map_err(fail)?;
-                Ok(format!("?i={id}&p={person}&m=saved#band"))
+                Ok(format!("?i={id}&p={person}&m=saved&to=band"))
             }
             "member-extend" => {
                 self.registry
                     .extend_member(&id, &person, days(), now_ms())
                     .map_err(fail)?;
-                Ok(format!("?i={id}&p={person}&m=extended#band"))
+                Ok(format!("?i={id}&p={person}&m=extended&to=band"))
             }
             "member-remove" => {
                 self.registry.remove_member(&id, &person).map_err(fail)?;
-                Ok(format!("?i={id}&m=unmember#band"))
+                Ok(format!("?i={id}&m=unmember&to=band"))
             }
             "remove" => {
                 self.registry.remove(&id).map_err(fail)?;
@@ -1010,7 +1021,7 @@ fn answer(mut stream: TcpStream, ui: &Ui) {
                 &mut stream,
                 "400 Bad Request",
                 html,
-                &ui.page(&id, "", 0, None, Some(&e)),
+                &ui.page(&id, "", 0, None, Some(&e), false),
             ),
         };
     }
@@ -1038,7 +1049,14 @@ fn answer(mut stream: TcpStream, ui: &Ui) {
         &mut stream,
         "200 OK",
         html,
-        &ui.page(&id, &param("p").unwrap_or_default(), pick, message, None),
+        &ui.page(
+            &id,
+            &param("p").unwrap_or_default(),
+            pick,
+            message,
+            None,
+            param("to").as_deref() == Some("band"),
+        ),
     );
 }
 

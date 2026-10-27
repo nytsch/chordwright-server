@@ -1,5 +1,9 @@
 # Changelog
 
+## Noch nicht veröffentlicht
+
+- Web-UI unter Home Assistant: Nach **Aufnehmen**, **Speichern**, **Verlängern** und beim Tipp auf einen Musiker blieb die Seite schwarz, vor allem in der App am Handy. Der Sprung zum Abschnitt Band (`#band`) scrollte auch die Seite von Home Assistant um den Iframe herum mit. Jetzt scrollt nur noch die Web-UI selbst.
+
 ## 2.3.0
 
 - Was ein Musiker darf, stellst du je Musiker ein: **Nur lesen** (wie bisher), **Sets bearbeiten** (Sets und Besetzung) oder **Songs und Sets bearbeiten** (auch Songs und Abläufe). Songs löschen und Sicherungen bleiben bei dir. `/api/health` und `/api/band` nennen es als `can`.
