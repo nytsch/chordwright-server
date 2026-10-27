@@ -105,7 +105,7 @@ Den Port änderst du unter **Netzwerk**. In der App trägst du dann diesen Port 
 
 Damit die Band auch von zu Hause an die Bibliothek kommt, ohne Portfreigabe am Router: ein Tunnel zu Cloudflare. Du brauchst eine eigene Domain bei Cloudflare (kostenloser Tarif reicht).
 
-1. Das Add-on **Cloudflared** installieren (Repository `https://github.com/brenner-tobias/ha-addons`) und nach dessen Anleitung einmal mit deinem Cloudflare-Konto verbinden.
+1. Das Add-on **Cloudflared** installieren (Repository `https://github.com/homeassistant-apps/repository`), aber noch nicht starten.
 2. Hier unter **Konfiguration**: `tunnel` einschalten und bei `public_url` die Adresse eintragen, unter der die Bibliothek draußen erreichbar sein soll, z. B. `https://songs.example.org`. Add-on neu starten. Es hört jetzt zusätzlich ohne https auf Port 4175 — die Verschlüsselung übernimmt der Tunnel.
 3. Im Cloudflared-Add-on unter **Konfiguration → additional_hosts**:
 
@@ -114,8 +114,9 @@ Damit die Band auch von zu Hause an die Bibliothek kommt, ohne Portfreigabe am R
      service: http://192.168.1.20:4175
    ```
 
-   mit der IP-Adresse deines Home Assistant. Cloudflared neu starten; den DNS-Eintrag legt es selbst an.
-4. In der Web-UI unter **Band** steht jetzt `https://songs.example.org` in den QR-Codes der Musiker. Weitere Bibliotheken liegen darunter mit `/i/<name>`.
+   mit der IP-Adresse deines Home Assistant (*Einstellungen → System → Netzwerk*). `external_hostname` bleibt leer, wenn Home Assistant selbst nicht ins Internet soll. Cloudflared starten; beim ersten Start steht im Protokoll ein Anmelde-Link: öffnen, bei Cloudflare anmelden, die Domain wählen. Den DNS-Eintrag legt es selbst an.
+5. Prüfen: `https://songs.example.org/api/health` im Browser zeigt `{"ok":true,…}`.
+6. In der Web-UI unter **Band** steht jetzt `https://songs.example.org` in den QR-Codes der Musiker. Weitere Bibliotheken liegen darunter mit `/i/<name>`.
 
 Über den Tunnel gilt dein eigener Token genauso — du kannst dich also auch unterwegs mit vollen Rechten verbinden. Halte ihn deshalb für dich; jeder Musiker bekommt nur seinen. Beide sind lange Zufallszahlen, die sich nicht erraten lassen.
 
