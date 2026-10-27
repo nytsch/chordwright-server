@@ -1,6 +1,6 @@
 # Changelog
 
-## Noch nicht veröffentlicht
+## 2.3.0
 
 - Was ein Musiker darf, stellst du je Musiker ein: **Nur lesen** (wie bisher), **Sets bearbeiten** (Sets und Besetzung) oder **Songs und Sets bearbeiten** (auch Songs und Abläufe). Songs löschen und Sicherungen bleiben bei dir. `/api/health` und `/api/band` nennen es als `can`.
 

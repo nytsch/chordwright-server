@@ -1,6 +1,6 @@
 [package]
 name = "chordwright-server"
-version = "2.2.1"
+version = "2.3.0"
 description = "A folder of .chordpro files, served to the Chordwright app — with revisions, conflict detection and a Home Assistant add-on."
 repository = "https://github.com/nytsch/chordwright-server"
 edition = "2021"
