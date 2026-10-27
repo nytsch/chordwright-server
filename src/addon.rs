@@ -35,14 +35,18 @@ const DEFAULT_NAMES: [&str; 3] = ["homeassistant.local", "homeassistant", "local
 /// Der Port ohne https für einen Tunnel (Option `tunnel`).
 const TUNNEL_PORT: u16 = 4175;
 
-/// `https://songs.example.org/` → `https://songs.example.org`; anderes als
-/// eine http(s)-Adresse gilt nicht.
+/// `https://songs.example.org/` → `https://songs.example.org`; ein bloßer
+/// Name (`songs.example.org`) bekommt `https://` davor — so steht er bei
+/// Cloudflare. Anderes als eine http(s)-Adresse gilt nicht.
 fn public_url(value: &Value) -> Option<String> {
-    let url = value.as_str()?.trim().trim_end_matches('/');
-    let rest = url
-        .strip_prefix("https://")
-        .or_else(|| url.strip_prefix("http://"))?;
-    (!rest.is_empty() && !rest.contains(char::is_whitespace)).then(|| url.to_string())
+    let url = value.as_str()?.trim();
+    let (scheme, rest) = match url.split_once("://") {
+        Some((scheme @ ("https" | "http"), rest)) => (scheme, rest),
+        Some(_) => return None,
+        None => ("https", url),
+    };
+    let rest = rest.trim_end_matches('/');
+    (!rest.is_empty() && !rest.contains(char::is_whitespace)).then(|| format!("{scheme}://{rest}"))
 }
 
 fn env_or(name: &str, fallback: &str) -> String {
@@ -418,4 +422,30 @@ pub fn options() -> Result<Addon, String> {
         share,
         folder,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn public_url_takes_a_bare_name_too() {
+        let read = |v: &str| public_url(&Value::from(v));
+        assert_eq!(
+            read("https://band.example.org/").as_deref(),
+            Some("https://band.example.org")
+        );
+        assert_eq!(
+            read(" band.example.org ").as_deref(),
+            Some("https://band.example.org")
+        );
+        assert_eq!(
+            read("http://10.0.0.9:4175").as_deref(),
+            Some("http://10.0.0.9:4175")
+        );
+        assert_eq!(read("ftp://band.example.org"), None);
+        assert_eq!(read(""), None);
+        assert_eq!(read("https://"), None);
+        assert_eq!(public_url(&Value::Null), None);
+    }
 }
