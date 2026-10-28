@@ -1,5 +1,10 @@
 # Changelog
 
+## 2.4.0
+
+- KI im Ablaufplaner über den Server: In der Web-UI bekommt jede Bibliothek einen Abschnitt **KI**. Dort trägst du einen Anthropic-Schlüssel ein und stellst ein, wie viele Fragen am Tag jeder Musiker stellen darf (Voreinstellung 2) und wie viele du selbst stellst (leer: ohne Grenze). Je Musiker lässt sich das unter **Band** ändern, 0 heißt keine KI. Der Schlüssel bleibt auf dem Server und geht nie an die App und nie in eine Sicherung. Der Server legt Modell und Umfang jeder Anfrage selbst fest. Die Web-UI zeigt je Zugang die Fragen von heute und diesem Monat samt Tokens und Suchen (`.chordwright/assistant.jsonl` im Ordner).
+- `POST /api/assistant` für die App. `/api/health` sagt mit `assistant`, ob ein Schlüssel hinterlegt ist, und mit einem Token in `assistantQuota`, wie viel davon heute schon verbraucht ist.
+
 ## 2.3.1
 
 - Web-UI unter Home Assistant: Nach **Aufnehmen**, **Speichern**, **Verlängern** und beim Tipp auf einen Musiker blieb die Seite schwarz, vor allem in der App am Handy. Der Sprung zum Abschnitt Band (`#band`) scrollte auch die Seite von Home Assistant um den Iframe herum mit. Jetzt scrollt nur noch die Web-UI selbst.

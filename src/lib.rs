@@ -25,8 +25,14 @@
 //! songs. A musician's access ends when its time is up or when they are taken
 //! off the list (`Hub::set_members`).
 
+mod assistant;
 mod backups;
 mod certs;
+
+pub use assistant::{
+    looks_like_key as looks_like_assistant_key, Assistant, Tally as AssistantTally,
+    Usage as AssistantUsage, LENGTH_DAILY, MODEL as ASSISTANT_MODEL,
+};
 
 pub use certs::{certificate_names, ensure_own_certificate, Own};
 pub use pairing::new_code as new_pairing_code;
@@ -202,6 +208,9 @@ pub struct Member {
     pub until: Option<i64>,
     #[serde(default, skip_serializing_if = "Can::is_read")]
     pub can: Can,
+    /// Questions to the assistant a day; None: the library's (`Assistant::daily`), 0: none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ai: Option<u32>,
 }
 
 impl Member {
@@ -487,6 +496,28 @@ impl Hub {
         };
         shared.set_members(members);
         true
+    }
+
+    /// The assistant of `/i/<id>` (None: the server's own) from now on;
+    /// None turns it off. False when there is no such library.
+    pub fn set_assistant(&self, id: Option<&str>, assistant: Option<Assistant>) -> bool {
+        let shared = match id {
+            None => self.0.main.clone(),
+            Some(id) => match self.instances().get(id) {
+                Some(i) => i.shared.clone(),
+                None => return false,
+            },
+        };
+        shared.desk.set(assistant);
+        true
+    }
+
+    /// This month's questions and tokens per asker, from the log.
+    pub fn assistant_tally(&self, id: Option<&str>) -> Option<Vec<AssistantTally>> {
+        match id {
+            None => Some(self.0.main.desk.tally()),
+            Some(id) => Some(self.instances().get(id)?.shared.desk.tally()),
+        }
     }
 
     /// The musicians of `/i/<id>` (None: the server's own).
@@ -845,6 +876,7 @@ fn library_state(
         backups: Backups::new(&root, backup_keep),
         journal: Journal::open(&root),
         members: RwLock::new(Vec::new()),
+        desk: Arc::new(assistant::Desk::open(&root)),
         stage: Stage::new(move |snapshot| stage_listeners.send(http::stage_line(&snapshot))),
         listeners,
         self_writes: Mutex::new(HashMap::new()),

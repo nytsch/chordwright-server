@@ -288,6 +288,7 @@ guitar, `B` bass, `S` singer.
 
 ```
 GET    /api/band    → { roles: [{ id, name }], members: [{ id, name, roles, can }], me: id | null }
+POST   /api/assistant → body { kind: form|length, system, messages } → { content, stop_reason, usage, quota } | 429 quota | 403 | 503 | 502 { reason }
 ```
 
 No token ever leaves the server this way. `GET /api/health` with a token says

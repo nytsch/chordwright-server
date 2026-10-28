@@ -50,6 +50,17 @@ Tipp auf einen Namen zeigt seinen QR-Code. Dort änderst du Name, Rollen und was
 
 Ohne Tunnel zeigt der QR-Code die Adresse im Heimnetz. Für unterwegs: [Von unterwegs](#von-unterwegs-tunnel-mit-cloudflared).
 
+### KI im Ablaufplaner
+
+Der Ablaufplaner der App kann Claude nach der Form der Originalaufnahme fragen. Damit das über deinen Server läuft und nicht jeder einen eigenen Schlüssel braucht, trägst du in der Web-UI unter **KI** einen Anthropic-Schlüssel ein (`sk-ant-…`, aus der [Anthropic Console](https://console.anthropic.com)). Am besten nimmst du einen eigenen Schlüssel je Bibliothek, aus einem eigenen Workspace mit Ausgabenlimit. Dann hat auch ein verlorener Schlüssel eine Obergrenze.
+
+- **Der Schlüssel bleibt auf dem Server** (in `/data/instances.json`). Er geht nie an die App, nie an einen Musiker und nie in eine Sicherung. Die Web-UI zeigt nur seine letzten vier Zeichen.
+- **Wie oft:** Je Musiker am Tag (Voreinstellung 2) und für dich (leer: ohne Grenze). Unter **Band** bekommt ein Musiker auf Wunsch eine eigene Zahl, 0 heißt keine KI. Es zählt jede Frage im Chat, auch Nachfragen. Eine Frage, auf die keine Antwort kam, zählt nicht. Die kleine Abfrage der Aufnahmelänge zählt nicht mit, hat aber eine eigene Grenze von 20 am Tag. Ein neuer Tag beginnt um Mitternacht UTC.
+- **Was eine Frage kostet,** legt der Server fest: Modell, Länge der Antwort und Zahl der Websuchen. Die App schickt nur die Frage und den Verlauf.
+- **Verbrauch:** Unter **KI** stehen je Zugang die Fragen von heute und diesem Monat, die Tokens und die Websuchen. Das Protokoll liegt in `share/chordwright/.chordwright/assistant.jsonl`. Die Kosten in Euro siehst du in der Anthropic Console.
+
+Ist am Server ein Schlüssel hinterlegt, fragt die App nur noch über ihn. Ohne Server (Bibliothek nur auf dem Gerät) bleibt es beim eigenen Schlüssel in der App.
+
 ### Was die Web-UI zeigt
 
 Oben jede Bibliothek mit Songs, Sets, gerade verbundenen Geräten und der letzten Änderung. Zur gewählten außerdem die Größe, die Sicherungen, die letzten Änderungen (wer was wann) und offene Bühnen samt dem, der gerade leitet.
