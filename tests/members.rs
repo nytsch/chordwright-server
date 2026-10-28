@@ -38,6 +38,7 @@ fn member(id: &str, name: &str, token: &str, roles: &[&str], until: Option<i64>)
         token: token.into(),
         roles: roles.iter().map(|r| r.to_string()).collect(),
         until,
+        ai: None,
         can: Default::default(),
     }
 }

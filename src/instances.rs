@@ -11,13 +11,19 @@
 //! eigenen Antworten, wann er kann. Die Liste steht mit in
 //! /data/instances.json und gilt nach einem Neustart weiter.
 //!
+//! Auch der Schlüssel für die KI im Ablaufplaner steht je Bibliothek hier
+//! (`Assistant` im Server), samt Tageslimit; er geht nie an die App und nie
+//! in eine Sicherung.
+//!
 //! Entfernen nimmt sie nur aus dem Dienst; der Ordner bleibt. Wer später eine
 //! mit demselben Namen anlegt, bekommt ihn samt Songs zurück.
 
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
-use chordwright_server::{is_instance_id, Can, Hub, Library, Member, ROLES};
+use chordwright_server::{
+    is_instance_id, looks_like_assistant_key, Assistant, Can, Hub, Library, Member, ROLES,
+};
 use serde::{Deserialize, Serialize};
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
@@ -29,6 +35,8 @@ pub struct Entry {
     pub token: String,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub members: Vec<Member>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub assistant: Option<Assistant>,
 }
 
 #[derive(Serialize, Deserialize, Default)]
@@ -37,6 +45,9 @@ struct File {
     /// Die Musiker der Hauptbibliothek.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     members: Vec<Member>,
+    /// Die KI der Hauptbibliothek.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    assistant: Option<Assistant>,
 }
 
 const DAY_MS: i64 = 24 * 60 * 60 * 1000;
@@ -52,6 +63,8 @@ pub struct Registry {
     list: Mutex<Vec<Entry>>,
     /// Immer nach `list` sperren, nie umgekehrt.
     main_members: Mutex<Vec<Member>>,
+    /// Ebenso.
+    main_assistant: Mutex<Option<Assistant>>,
 }
 
 /// Aus einem Namen eine id: klein, Umlaute ausgeschrieben, alles andere `-`.
@@ -132,6 +145,7 @@ impl Registry {
             .and_then(|t| serde_json::from_str::<File>(&t).ok())
             .unwrap_or_default();
         hub.set_members(None, saved.members.clone());
+        hub.set_assistant(None, saved.assistant.clone());
         let list = saved
             .instances
             .into_iter()
@@ -146,6 +160,7 @@ impl Registry {
             hub,
             list: Mutex::new(Vec::new()),
             main_members: Mutex::new(saved.members),
+            main_assistant: Mutex::new(saved.assistant),
         };
         for entry in &list {
             if let Err(e) = registry.serve(entry) {
@@ -171,6 +186,8 @@ impl Registry {
             },
         )?;
         self.hub.set_members(Some(&entry.id), entry.members.clone());
+        self.hub
+            .set_assistant(Some(&entry.id), entry.assistant.clone());
         Ok(())
     }
 
@@ -180,9 +197,11 @@ impl Registry {
 
     fn save(&self, list: &[Entry]) -> Result<(), String> {
         let members = self.main_members().clone();
+        let assistant = self.main_assistant().clone();
         let text = serde_json::to_string_pretty(&File {
             instances: list.to_vec(),
             members,
+            assistant,
         })
         .map_err(|e| e.to_string())?;
         let tmp = self.file.with_extension("json.tmp");
@@ -217,6 +236,7 @@ impl Registry {
             name,
             token: new_token()?,
             members: Vec::new(),
+            assistant: None,
         };
         self.serve(&entry)?;
         list.push(entry.clone());
@@ -320,6 +340,7 @@ impl Registry {
                 roles,
                 until: until(days, now),
                 can,
+                ai: None,
             };
             members.push(member.clone());
             Ok(member)
@@ -334,6 +355,7 @@ impl Registry {
         name: &str,
         roles: &[String],
         can: Can,
+        ai: Option<u32>,
     ) -> Result<(), String> {
         let name = clean_name(name).ok_or("Ohne Namen geht es nicht.")?;
         let roles = clean_roles(roles);
@@ -342,6 +364,7 @@ impl Registry {
             m.name = name;
             m.roles = roles;
             m.can = can;
+            m.ai = ai;
             Ok(())
         })
     }
@@ -401,6 +424,104 @@ impl Registry {
         self.hub
             .set_members((!lib.is_empty()).then_some(lib), members);
         Ok(out)
+    }
+
+    fn main_assistant(&self) -> std::sync::MutexGuard<'_, Option<Assistant>> {
+        self.main_assistant
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// Die KI einer Bibliothek; `lib` leer: die der Hauptbibliothek.
+    pub fn assistant(&self, lib: &str) -> Option<Assistant> {
+        if lib.is_empty() {
+            return self.main_assistant().clone();
+        }
+        let list = self.lock();
+        list.iter()
+            .find(|e| e.id == lib)
+            .and_then(|e| e.assistant.clone())
+    }
+
+    /// Ein neuer Schlüssel; die Limits bleiben, wie sie waren.
+    pub fn set_assistant_key(&self, lib: &str, key: &str) -> Result<(), String> {
+        let key = key.trim();
+        if !looks_like_assistant_key(key) {
+            return Err("Das sieht nicht nach einem Anthropic-Schlüssel aus (sk-ant-…).".into());
+        }
+        self.change_assistant(lib, |a| {
+            *a = Some(match a.take() {
+                Some(old) => Assistant {
+                    key: key.to_string(),
+                    ..old
+                },
+                None => Assistant {
+                    key: key.to_string(),
+                    daily: 2,
+                    owner_daily: None,
+                    endpoint: None,
+                },
+            });
+            Ok(())
+        })
+    }
+
+    /// Wie oft am Tag: je Musiker (ohne eigenes Limit) und für dich (None: ohne Grenze).
+    pub fn set_assistant_limits(
+        &self,
+        lib: &str,
+        daily: u32,
+        owner_daily: Option<u32>,
+    ) -> Result<(), String> {
+        self.change_assistant(lib, |a| {
+            let a = a.as_mut().ok_or("Erst einen Schlüssel eintragen.")?;
+            a.daily = daily;
+            a.owner_daily = owner_daily;
+            Ok(())
+        })
+    }
+
+    /// Schlüssel weg: die KI ist aus, bis wieder einer eingetragen ist.
+    pub fn remove_assistant(&self, lib: &str) -> Result<(), String> {
+        self.change_assistant(lib, |a| {
+            *a = None;
+            Ok(())
+        })
+    }
+
+    /// Wie `change_members`, für die KI.
+    fn change_assistant(
+        &self,
+        lib: &str,
+        change: impl FnOnce(&mut Option<Assistant>) -> Result<(), String>,
+    ) -> Result<(), String> {
+        let mut list = self.lock();
+        let old = if lib.is_empty() {
+            self.main_assistant().clone()
+        } else {
+            list.iter()
+                .find(|e| e.id == lib)
+                .ok_or("Diese Bibliothek gibt es nicht.")?
+                .assistant
+                .clone()
+        };
+        let mut assistant = old.clone();
+        change(&mut assistant)?;
+        let put = |list: &mut Vec<Entry>, a: Option<Assistant>| {
+            if lib.is_empty() {
+                *self.main_assistant() = a;
+            } else if let Some(e) = list.iter_mut().find(|e| e.id == lib) {
+                e.assistant = a;
+            }
+        };
+        put(&mut list, assistant.clone());
+        if let Err(e) = self.save(&list) {
+            put(&mut list, old);
+            return Err(e);
+        }
+        self.hub
+            .set_assistant((!lib.is_empty()).then_some(lib), assistant);
+        Ok(())
     }
 
     /// Nimmt sie aus dem Dienst; der Ordner bleibt.
@@ -483,7 +604,7 @@ mod tests {
 
         registry.extend_member("", "niko", 30, 2_000).unwrap();
         registry
-            .edit_member("", "niko", "Niko K.", &roles(&["E"]), Can::Sets)
+            .edit_member("", "niko", "Niko K.", &roles(&["E"]), Can::Sets, Some(5))
             .unwrap();
         let now = registry.members("");
         assert_eq!(now[0].token, niko.token, "extending keeps the token");
@@ -492,7 +613,30 @@ mod tests {
             (now[0].name.as_str(), now[0].roles.clone()),
             ("Niko K.", roles(&["E"]))
         );
+        assert_eq!(now[0].ai, Some(5));
         assert_eq!(server.hub().members(None), Some(now.clone()));
+
+        // The assistant: a key that is none is refused; limits want a key first.
+        assert!(registry
+            .set_assistant_key(&chor.id, "kein-schluessel")
+            .is_err());
+        assert!(registry.set_assistant_limits(&chor.id, 3, None).is_err());
+        registry
+            .set_assistant_key(&chor.id, "sk-ant-api03-test-key-0001")
+            .unwrap();
+        registry
+            .set_assistant_limits(&chor.id, 4, Some(10))
+            .unwrap();
+        registry
+            .set_assistant_key(&chor.id, "sk-ant-api03-test-key-0002")
+            .unwrap();
+        let ai = registry.assistant(&chor.id).unwrap();
+        assert_eq!(
+            (ai.key.as_str(), ai.daily, ai.owner_daily),
+            ("sk-ant-api03-test-key-0002", 4, Some(10)),
+            "a new key keeps the limits"
+        );
+        assert_eq!(registry.assistant(""), None);
 
         let lea = registry
             .add_member(&chor.id, "Lea", &roles(&["P"]), Can::All, 0, 0)
@@ -510,6 +654,13 @@ mod tests {
         let registry = Registry::open(&data, &share, "chordwright", 0.0, 3, server.hub());
         assert_eq!(server.hub().members(None), Some(now));
         assert_eq!(server.hub().members(Some(&chor.id)), Some(vec![lea]));
+        assert_eq!(
+            registry.assistant(&chor.id).map(|a| a.daily),
+            Some(4),
+            "the assistant survives a restart"
+        );
+        registry.remove_assistant(&chor.id).unwrap();
+        assert_eq!(registry.assistant(&chor.id), None);
 
         registry.remove_member("", "niko").unwrap();
         assert!(registry.remove_member("", "niko").is_err());

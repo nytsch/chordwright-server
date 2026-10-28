@@ -244,6 +244,19 @@ fn size(bytes: u64) -> String {
     }
 }
 
+/// Höchstens so viele Fragen am Tag lassen sich einstellen.
+const AI_MAX: u32 = 100;
+
+/// „840“, „12,4 k“, „1,3 Mio.“
+fn tokens(n: u64) -> String {
+    let one = |v: f64| format!("{v:.1}").replace('.', ",");
+    match n {
+        0..=999 => n.to_string(),
+        1000..=999_999 => format!("{} k", one(n as f64 / 1000.0)),
+        _ => format!("{} Mio.", one(n as f64 / 1_000_000.0)),
+    }
+}
+
 fn plural(n: u64, one: &str, many: &str) -> String {
     format!("{n} {}", if n == 1 { one } else { many })
 }
@@ -307,6 +320,9 @@ fn notice(code: &str) -> Option<&'static str> {
         "saved" => "Gespeichert.",
         "extended" => "Verlängert. Der Zugang bleibt derselbe.",
         "unmember" => "Von der Liste genommen. Sein Zugang gilt nicht mehr.",
+        "ai-key" => "Schlüssel gespeichert. Die KI im Ablaufplaner läuft jetzt über diesen Server.",
+        "ai-limits" => "Limits gespeichert.",
+        "ai-off" => "Schlüssel entfernt. Die KI ist aus.",
         _ => return None,
     })
 }
@@ -330,7 +346,8 @@ impl Ui {
         pick: usize,
         message: Option<&str>,
         error: Option<&str>,
-        to_band: bool,
+        // Wohin die Seite nach dem Laden springt: `band`, `ki` oder leer.
+        to: &str,
     ) -> String {
         let now = now_ms();
         let entries = self.registry.list();
@@ -507,6 +524,7 @@ impl Ui {
         };
 
         let band = self.band_section(sel, person, &shown, chosen, now);
+        let ki = self.ai_section(sel);
 
         let figures = match &shown.stats {
             None => String::new(),
@@ -615,10 +633,11 @@ impl Ui {
         // Assistant, und ein Sprung zum Anker scrollt auch dessen Seite mit;
         // der Iframe rutscht aus dem Bild, es bleibt schwarz. `scrollTo`
         // bewegt nur dieses Fenster.
-        let scroll = if to_band {
-            "<script>addEventListener('load',()=>{const b=document.getElementById('band');if(b)scrollTo(0,b.getBoundingClientRect().top+scrollY-16)})</script>\n"
-        } else {
-            ""
+        let scroll = match to {
+            "band" | "ki" => format!(
+                "<script>addEventListener('load',()=>{{const b=document.getElementById('{to}');if(b)scrollTo(0,b.getBoundingClientRect().top+scrollY-16)}})</script>\n"
+            ),
+            _ => String::new(),
         };
         let sub = format!(
             "Version {} · {} · {}",
@@ -631,7 +650,7 @@ impl Ui {
             "{HEAD}<header><h1>Chordwright Data</h1><p class=\"muted\">{sub}</p></header>\n{banner}\
              <h2>Bibliotheken</h2>\n<div class=\"libs\">\n{cards}{create}\n</div>\n\
              <article>\n<h2>{}</h2>\n{chips}\n<div class=\"steps\">\n{steps}\n</div>\n\
-             <h3 id=\"band\">Band</h3>\n{band}\n<h3>Zahlen</h3>\n{figures}\n<h3>Verwalten</h3>\n{manage}\n</article>\n</main>\n{scroll}</body>\n</html>\n",
+             <h3 id=\"band\">Band</h3>\n{band}\n<h3 id=\"ki\">KI</h3>\n{ki}\n<h3>Zahlen</h3>\n{figures}\n<h3>Verwalten</h3>\n{manage}\n</article>\n</main>\n{scroll}</body>\n</html>\n",
             esc(&shown.name)
         )
     }
@@ -703,6 +722,10 @@ impl Ui {
                 } else {
                     format!(" · {}", m.can.label())
                 };
+                let can = match m.ai {
+                    Some(n) => format!("{can} · KI {n}/Tag"),
+                    None => can,
+                };
                 format!(
                     "<li><a class=\"who\" href=\"?i={id}&amp;p={}&amp;to=band\"{current}>{}</a> {letters} <span class=\"muted\">· {}{can}</span></li>",
                     esc(&m.id),
@@ -761,11 +784,15 @@ impl Ui {
         let hidden = format!(
             "{csrf}<input type=\"hidden\" name=\"id\" value=\"{id}\"><input type=\"hidden\" name=\"p\" value=\"{mid}\">"
         );
+        let ai_input = format!(
+            "<input name=\"ai\" type=\"number\" min=\"0\" max=\"{AI_MAX}\" value=\"{}\" placeholder=\"KI/Tag\" aria-label=\"KI-Fragen am Tag\" title=\"Fragen an die KI im Ablaufplaner je Tag. Leer: wie für alle, 0: keine\" class=\"short\">",
+            m.ai.map(|n| n.to_string()).unwrap_or_default()
+        );
         let manage = format!(
             "<section>\n  <p><b>{}</b> <span class=\"muted\">· {}</span></p>\n  \
              <form class=\"row\" method=\"post\" action=\"./\">{hidden}<input type=\"hidden\" name=\"do\" value=\"member-edit\">\
              <input name=\"name\" required maxlength=\"60\" value=\"{}\" aria-label=\"Name\">\
-             <span class=\"roles\" role=\"group\" aria-label=\"Rollen\">{}</span>{}<button class=\"quiet\">Speichern</button></form>\n  \
+             <span class=\"roles\" role=\"group\" aria-label=\"Rollen\">{}</span>{}{}<button class=\"quiet\">Speichern</button></form>\n  \
              <form class=\"row\" method=\"post\" action=\"./\">{hidden}<input type=\"hidden\" name=\"do\" value=\"member-extend\">\
              <select name=\"days\" aria-label=\"Ab jetzt für\">{}</select><button class=\"quiet\" title=\"Der Token bleibt; verbundene Geräte bleiben verbunden\">Verlängern</button></form>\n  \
              <form class=\"row\" method=\"post\" action=\"./\" onsubmit=\"return confirm('Von der Liste nehmen? Mit diesem Zugang kommt niemand mehr hinein.')\">{hidden}<input type=\"hidden\" name=\"do\" value=\"member-remove\">\
@@ -775,9 +802,83 @@ impl Ui {
             esc(&m.name),
             boxes(&m.roles),
             rights(m.can),
+            ai_input,
             choices(if m.until.is_none() { 0 } else { 30 })
         );
         format!("{list}\n{add}\n<div class=\"steps\">\n{code}{manage}\n</div>")
+    }
+
+    /// Die KI im Ablaufplaner: der Schlüssel, wie oft am Tag, wer wie viel
+    /// gefragt hat. Ohne Schlüssel nur das Feld dafür.
+    fn ai_section(&self, sel: &str) -> String {
+        let csrf = self.csrf();
+        let id = esc(sel);
+        let hidden = format!("{csrf}<input type=\"hidden\" name=\"id\" value=\"{id}\">");
+        let key_form = |label: &str| {
+            format!(
+                "<form class=\"row\" method=\"post\" action=\"./\">{hidden}<input type=\"hidden\" name=\"do\" value=\"ai-key\">\
+                 <input name=\"key\" type=\"password\" required autocomplete=\"off\" placeholder=\"sk-ant-…\" aria-label=\"Anthropic-Schlüssel\" \
+                 title=\"Bleibt auf diesem Server: geht nie an die App und nie in eine Sicherung\"><button>{label}</button></form>"
+            )
+        };
+        let Some(a) = self.registry.assistant(sel) else {
+            return format!(
+                "<p class=\"muted\">Mit einem Anthropic-Schlüssel fragt der Ablaufplaner die KI über diesen Server, mit einem Tageslimit je Musiker. Am besten ein eigener Schlüssel je Bibliothek, aus einem Workspace mit Ausgabenlimit in der Anthropic Console.</p>\n{}",
+                key_form("Schlüssel speichern")
+            );
+        };
+        let limits = format!(
+            "<form class=\"row\" method=\"post\" action=\"./\">{hidden}<input type=\"hidden\" name=\"do\" value=\"ai-limits\">\
+             <label>Je Musiker am Tag <input name=\"daily\" type=\"number\" min=\"0\" max=\"{AI_MAX}\" value=\"{}\" class=\"short\" title=\"Für jeden ohne eigene Zahl in der Band\"></label>\
+             <label>Du am Tag <input name=\"owner\" type=\"number\" min=\"0\" max=\"{AI_MAX}\" value=\"{}\" placeholder=\"∞\" class=\"short\" title=\"Leer: ohne Grenze\"></label>\
+             <button class=\"quiet\">Speichern</button></form>",
+            a.daily,
+            a.owner_daily.map(|n| n.to_string()).unwrap_or_default()
+        );
+        let members = self.registry.members(sel);
+        let limit_of = |who: &str| -> String {
+            if who == "owner" {
+                return a.owner_daily.map_or("∞".into(), |n| n.to_string());
+            }
+            let m = members.iter().find(|m| m.id == who);
+            m.and_then(|m| m.ai).unwrap_or(a.daily).to_string()
+        };
+        let tally = self
+            .hub
+            .assistant_tally((!sel.is_empty()).then_some(sel))
+            .unwrap_or_default();
+        let rows: String = tally
+            .iter()
+            .map(|t| {
+                let name = match (t.who.as_str(), &t.name) {
+                    ("owner", _) => "Du".to_string(),
+                    (_, Some(n)) => n.clone(),
+                    (who, None) => who.to_string(),
+                };
+                format!(
+                    "<li>{} <span class=\"muted\">· heute {} von {} · Monat {} · {} Tokens · {}</span></li>",
+                    esc(&name),
+                    t.today,
+                    limit_of(&t.who),
+                    plural(t.month as u64, "Frage", "Fragen"),
+                    tokens(t.usage.input + t.usage.output),
+                    plural(t.usage.searches, "Suche", "Suchen")
+                )
+            })
+            .collect();
+        let figures = if tally.is_empty() {
+            "<p class=\"muted\">Diesen Monat noch keine Fragen.</p>".to_string()
+        } else {
+            format!("<ul class=\"rows\">{rows}</ul>")
+        };
+        format!(
+            "<p><span class=\"value\">{}</span> <span class=\"muted\">· Modell {}</span></p>\n{}\n{limits}\n{figures}\n\
+             <form class=\"row\" method=\"post\" action=\"./\" onsubmit=\"return confirm('Schlüssel entfernen? Die KI im Ablaufplaner ist dann aus.')\">{hidden}<input type=\"hidden\" name=\"do\" value=\"ai-remove\">\
+             <button class=\"quiet danger\">Schlüssel entfernen</button></form>",
+            esc(&a.masked()),
+            esc(chordwright_server::ASSISTANT_MODEL),
+            key_form("Schlüssel ersetzen")
+        )
     }
 
     fn csrf(&self) -> String {
@@ -801,6 +902,14 @@ impl Ui {
         let fail = |e: String| (id.clone(), e);
         let person = field("p");
         let days = || field("days").trim().parse::<u32>().unwrap_or(30).min(365);
+        // Leer: keine eigene Zahl (für einen Musiker: wie für alle; für dich: ohne Grenze).
+        let count = |name: &str| {
+            field(name)
+                .trim()
+                .parse::<u32>()
+                .ok()
+                .map(|n| n.min(AI_MAX))
+        };
         match field("do").as_str() {
             "create" => {
                 let entry = self
@@ -839,6 +948,7 @@ impl Ui {
                         &field("name"),
                         &form_fields(body, "role"),
                         Can::parse(&field("can")),
+                        count("ai"),
                     )
                     .map_err(fail)?;
                 Ok(format!("?i={id}&p={person}&m=saved&to=band"))
@@ -852,6 +962,22 @@ impl Ui {
             "member-remove" => {
                 self.registry.remove_member(&id, &person).map_err(fail)?;
                 Ok(format!("?i={id}&m=unmember&to=band"))
+            }
+            "ai-key" => {
+                self.registry
+                    .set_assistant_key(&id, &field("key"))
+                    .map_err(fail)?;
+                Ok(format!("?i={id}&m=ai-key&to=ki"))
+            }
+            "ai-limits" => {
+                self.registry
+                    .set_assistant_limits(&id, count("daily").unwrap_or(2), count("owner"))
+                    .map_err(fail)?;
+                Ok(format!("?i={id}&m=ai-limits&to=ki"))
+            }
+            "ai-remove" => {
+                self.registry.remove_assistant(&id).map_err(fail)?;
+                Ok(format!("?i={id}&m=ai-off&to=ki"))
             }
             "remove" => {
                 self.registry.remove(&id).map_err(fail)?;
@@ -912,6 +1038,7 @@ const HEAD: &str = r#"<!doctype html>
   .rows li:last-child { border-bottom: 0; }
   .what { font-weight: 500; }
   .note { color: var(--muted); }
+  input.short { width: 5.5em; }
   form { margin: 0; }
   .row { display: flex; flex-wrap: wrap; gap: 8px; margin: 0 0 10px; }
   .row input { flex: 1 1 200px; min-width: 0; }
@@ -1021,7 +1148,7 @@ fn answer(mut stream: TcpStream, ui: &Ui) {
                 &mut stream,
                 "400 Bad Request",
                 html,
-                &ui.page(&id, "", 0, None, Some(&e), false),
+                &ui.page(&id, "", 0, None, Some(&e), ""),
             ),
         };
     }
@@ -1055,7 +1182,7 @@ fn answer(mut stream: TcpStream, ui: &Ui) {
             pick,
             message,
             None,
-            param("to").as_deref() == Some("band"),
+            param("to").as_deref().unwrap_or_default(),
         ),
     );
 }
@@ -1076,6 +1203,70 @@ pub fn start(port: u16, ui: Ui) -> std::io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_assistant_section() {
+        use chordwright_server::{Options, Server};
+        let root = std::env::temp_dir().join(format!("cw-panel-ai-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let (data, share) = (root.join("data"), root.join("share"));
+        std::fs::create_dir_all(&data).unwrap();
+        let server = Server::start(Options {
+            dir: share.join("chordwright"),
+            token: "owner".into(),
+            port: 0,
+            ..Options::default()
+        })
+        .unwrap();
+        let registry = Arc::new(Registry::open(
+            &data,
+            &share,
+            "chordwright",
+            0.0,
+            3,
+            server.hub(),
+        ));
+        let ui = Ui {
+            panel: Panel {
+                addresses: Vec::new(),
+                scheme: "https".into(),
+                port: "4174".into(),
+                token: "owner".into(),
+                own_ca: false,
+                folder: "chordwright".into(),
+                samba: false,
+                public_url: None,
+            },
+            registry: registry.clone(),
+            hub: server.hub(),
+            secret: "s".into(),
+        };
+        assert!(ui.ai_section("").contains("Schlüssel speichern"));
+        let form = |what: &str| format!("csrf=s&id=&do={what}");
+        assert!(ui.act(&format!("{}&key=nope", form("ai-key"))).is_err());
+        assert_eq!(
+            ui.act(&format!(
+                "{}&key=sk-ant-api03-panel-test-9876",
+                form("ai-key")
+            ))
+            .unwrap(),
+            "?i=&m=ai-key&to=ki"
+        );
+        ui.act(&format!("{}&daily=3&owner=", form("ai-limits")))
+            .unwrap();
+        let a = registry.assistant("").unwrap();
+        assert_eq!((a.daily, a.owner_daily), (3, None));
+        let page = ui.ai_section("");
+        assert!(
+            page.contains("sk-ant-…9876") && !page.contains("panel-test"),
+            "only the end of the key shows"
+        );
+        assert!(page.contains("Diesen Monat noch keine Fragen"));
+        ui.act(&form("ai-remove")).unwrap();
+        assert!(registry.assistant("").is_none());
+        drop(server);
+        let _ = std::fs::remove_dir_all(&root);
+    }
 
     #[test]
     fn links_and_order() {

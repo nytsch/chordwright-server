@@ -30,6 +30,7 @@
 //! ```
 //!
 //!   GET    /api/band               → { roles, members: [{ id, name, roles }], me }
+//!   POST   /api/assistant          → the AI assistant, with the library's key (assistant.rs)
 //!
 //! A musician's token (`Member`) opens the same routes to read, and the
 //! stage; it writes only `user/availability.<their id>`, under their name.
@@ -57,6 +58,7 @@ use hyper::{HeaderMap, Method, Request, Response, StatusCode};
 use serde_json::{json, Value};
 use tokio::sync::mpsc;
 
+use crate::assistant::{self, Asker, Desk};
 use crate::backups::Backups;
 use crate::journal::Journal;
 use crate::pairing::{Attempt, Pairing};
@@ -142,6 +144,8 @@ pub struct Shared {
     pub pairing: Option<Pairing>,
     /// The musicians: each reads, and writes only their answers (`Member`).
     pub members: RwLock<Vec<Member>>,
+    /// The assistant: its key and limits, today's counts, the log.
+    pub desk: Arc<Desk>,
     pub store: Store,
     pub backups: Backups,
     pub journal: Journal,
@@ -202,6 +206,23 @@ impl Shared {
             .collect();
         *self.members.write().unwrap_or_else(|e| e.into_inner()) = members;
         self.listeners.drop_members();
+    }
+
+    /// Who asks the assistant, with their daily limit.
+    fn asker(&self, access: &Access) -> Asker {
+        let config = self.desk.config();
+        match access {
+            Access::Owner => Asker {
+                id: "owner".into(),
+                name: None,
+                limit: config.and_then(|c| c.owner_daily),
+            },
+            Access::Member(m) => Asker {
+                id: m.id.clone(),
+                name: Some(m.name.clone()),
+                limit: Some(m.ai.unwrap_or(config.map_or(0, |c| c.daily))),
+            },
+        }
     }
 
     /// Who `given` is: Ok(None) nobody, Err(()) a musician after their time.
@@ -412,6 +433,7 @@ async fn route(s: Arc<Shared>, req: Request<Incoming>) -> Response<Body> {
                 "changes": true,
                 "stage": true,
                 "pairing": s.pairing.is_some(),
+                "assistant": s.desk.config().is_some(),
         });
         // With a token, what it may do — so a musician's app knows who it is
         // and what not to write.
@@ -427,6 +449,9 @@ async fn route(s: Arc<Shared>, req: Request<Incoming>) -> Response<Body> {
                 Ok(None) => json!("none"),
                 Err(()) => json!("expired"),
             };
+            if let (Some(_), Ok(Some(who))) = (s.desk.config(), s.access(&given)) {
+                health["assistantQuota"] = s.desk.quota(&s.asker(&who));
+            }
         }
         return send(200, health);
     }
@@ -469,6 +494,19 @@ async fn route(s: Arc<Shared>, req: Request<Incoming>) -> Response<Body> {
                 }),
             );
         }
+        Some("assistant") if parts.len() == 2 && method == Method::POST => {
+            let who = s.asker(&access);
+            let limited = http_body_util::Limited::new(req.into_body(), 8 << 20);
+            let body = match limited.collect().await {
+                Ok(b) => serde_json::from_slice::<Value>(&b.to_bytes()).unwrap_or(Value::Null),
+                Err(_) => return error(413, "too large"),
+            };
+            return match assistant::ask(s.desk.clone(), who, body).await {
+                Ok(reply) => send(200, reply),
+                Err(no) => send(no.status, no.body),
+            };
+        }
+        Some("assistant") => return error(405, "method not allowed"),
         Some("backups") if access.member().is_some() => return read_only(),
         Some("backups") => return backups(&s, req, &parts[2..]).await,
         Some("changes") if parts.len() == 2 && method == Method::GET => {
