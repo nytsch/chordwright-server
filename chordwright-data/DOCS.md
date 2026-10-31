@@ -65,6 +65,15 @@ Ist am Server ein Schlüssel hinterlegt, fragt die App nur noch über ihn. Ohne 
 
 Oben jede Bibliothek mit Songs, Sets, gerade verbundenen Geräten und der letzten Änderung. Zur gewählten außerdem die Größe, die Sicherungen, die letzten Änderungen (wer was wann) und offene Bühnen samt dem, der gerade leitet.
 
+Unter **Nutzung** siehst du, wer wann auf die Bibliothek zugegriffen hat — wahlweise für die letzten 24 Stunden, 7 oder 30 Tage:
+
+- **Zahlen:** Anfragen, Personen, wie lange der Server damit beschäftigt war (Rechenzeit), wie viel übertragen wurde; dazu, was das Add-on gerade braucht (CPU im Schnitt seit dem Start, Arbeitsspeicher) und die Last des ganzen Home-Assistant-Rechners in der letzten Minute.
+- **Wer** und **Wofür** als Ringdiagramme: der Anteil jeder Person an den Anfragen, und ob gelesen, geschrieben, live verbunden, auf der Bühne gespielt, die KI gefragt oder jemand abgewiesen wurde.
+- **Verlauf:** Anfragen je Tag (bei 24 Stunden je Stunde).
+- **Je Person** und **Besuche:** jede Person mit Rechenzeit und letztem Zugriff, und die einzelnen Besuche mit Uhrzeit. Anfragen ohne längere Pause (15 Minuten) gelten als ein Besuch.
+
+Ein Musiker steht dort mit seinem Namen aus **Band**. Wer mit dem Token der Bibliothek verbunden ist, steht unter dem Namen, den er in der App beim Server einträgt — ohne Namen als „Ohne Namen“. „Abgewiesen“ sind Anfragen ohne gültigen Token. Gezählt wird nur wer, wann und wofür, nichts vom Inhalt. Die Zahlen liegen in `share/chordwright/.chordwright/usage.json` und reichen 31 Tage zurück; nur die Web-UI zeigt sie, die App und die Musiker sehen sie nicht.
+
 ### Von Hand
 
 In Chordwright: **Einstellungen → Datenquelle**

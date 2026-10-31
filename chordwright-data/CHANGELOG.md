@@ -1,5 +1,10 @@
 # Changelog
 
+## 2.5.0
+
+- Nutzung: In der Web-UI bekommt jede Bibliothek einen Abschnitt **Nutzung** — wer wann auf die Bibliothek zugegriffen hat, für die letzten 24 Stunden, 7 oder 30 Tage. Zahlen zu Anfragen, Personen, Rechenzeit und übertragenen Daten, dazu die Last des Add-ons (CPU im Schnitt, Arbeitsspeicher) und des ganzen Rechners. Zwei Ringdiagramme zeigen, wer wie viel angefragt hat und wofür (Lesen, Schreiben, Live-Verbindung, Bühne, KI, Sicherungen, Abgewiesen), Säulen den Verlauf, eine Tabelle jede Person mit ihrem letzten Zugriff, und darunter die einzelnen Besuche mit Uhrzeit.
+- Musiker stehen dort mit ihrem Namen, Geräte mit dem Token der Bibliothek unter dem Namen, den die App beim Server einträgt. Gezählt wird nur, nichts vom Inhalt; die Zahlen liegen in `.chordwright/usage.json` im Ordner und reichen 31 Tage zurück. Kein Weg der API gibt sie heraus.
+
 ## 2.4.0
 
 - KI im Ablaufplaner über den Server: In der Web-UI bekommt jede Bibliothek einen Abschnitt **KI**. Dort trägst du einen Anthropic-Schlüssel ein und stellst ein, wie viele Fragen am Tag jeder Musiker stellen darf (Voreinstellung 2) und wie viele du selbst stellst (leer: ohne Grenze). Je Musiker lässt sich das unter **Band** ändern, 0 heißt keine KI. Der Schlüssel bleibt auf dem Server und geht nie an die App und nie in eine Sicherung. Der Server legt Modell und Umfang jeder Anfrage selbst fest. Die Web-UI zeigt je Zugang die Fragen von heute und diesem Monat samt Tokens und Suchen (`.chordwright/assistant.jsonl` im Ordner).
