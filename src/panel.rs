@@ -17,7 +17,7 @@ use std::net::{IpAddr, TcpListener, TcpStream};
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use chordwright_server::{Can, Hub, Member, Stats, ROLES};
+use chordwright_server::{Can, Hub, Member, Stats, ROLES, USAGE_KINDS};
 use qrcodegen::{QrCode, QrCodeEcc};
 
 use crate::instances::{Entry, Registry};
@@ -270,6 +270,189 @@ fn action_label(action: &str) -> &'static str {
     }
 }
 
+/// Wofür eine Anfrage war (usage.rs `KINDS`), in derselben Reihenfolge und
+/// Farbe überall.
+fn kind_label(kind: &str) -> &'static str {
+    match kind {
+        "read" => "Lesen",
+        "write" => "Schreiben",
+        "live" => "Live-Verbindung",
+        "stage" => "Bühne",
+        "assistant" => "KI",
+        "backups" => "Sicherungen",
+        "check" => "Verbindungstest",
+        "denied" => "Abgewiesen",
+        _ => "Sonstiges",
+    }
+}
+
+fn kind_title(kind: &str) -> &'static str {
+    match kind {
+        "read" => "Songs, Sets und Einstellungen abgerufen",
+        "write" => "Etwas gespeichert oder gelöscht",
+        "live" => "Eine App hat sich für Änderungen angemeldet",
+        "stage" => "Gemeinsame Bühne: leiten und folgen",
+        "assistant" => "Fragen an die KI im Ablaufplaner",
+        "backups" => "Sicherungen angesehen, angelegt oder zurückgeholt",
+        "check" => "Erreichbarkeit geprüft",
+        "denied" => "Ohne gültigen Token, oder ein abgelaufener Zugang",
+        _ => "",
+    }
+}
+
+fn role_label(role: &str) -> &'static str {
+    match role {
+        "owner" => "Token der Bibliothek",
+        "guest" => "Browser mit Code",
+        "member" => "Musiker",
+        "denied" => "ohne gültigen Zugang",
+        _ => "",
+    }
+}
+
+/// Die Wahl des Zeitraums für „Nutzung“, in Tagen.
+const USAGE_DAYS: [(u32, &str); 3] = [(1, "24 Std."), (7, "7 Tage"), (30, "30 Tage")];
+/// So viele Personen bekommen eine eigene Farbe, der Rest ist „Weitere“.
+const USAGE_SLOTS: usize = 5;
+
+/// „12 ms“, „3,4 s“, „2 Min.“ — Mikrosekunden zum Lesen.
+fn busy(us: u64) -> String {
+    let ms = us as f64 / 1000.0;
+    if ms < 1000.0 {
+        format!("{} ms", ms.round())
+    } else if ms < 60_000.0 {
+        format!("{:.1} s", ms / 1000.0).replace('.', ",")
+    } else {
+        format!("{} Min.", (ms / 60_000.0).round())
+    }
+}
+
+fn percent(part: u64, whole: u64) -> String {
+    if whole == 0 {
+        return "0 %".into();
+    }
+    let p = part as f64 * 100.0 / whole as f64;
+    if p > 0.0 && p < 1.0 {
+        "< 1 %".into()
+    } else {
+        format!("{} %", p.round())
+    }
+}
+
+/// Ein Zeitpunkt: „vor 5 Min.“, im Browser zu Datum und Uhrzeit des Geräts
+/// (das Add-on weiß die Zeitzone nicht).
+fn moment(at: i64, now: i64) -> String {
+    format!("<time data-t=\"{at}\">{}</time>", ago(at, now))
+}
+
+/// Ein Ring aus Anteilen: (Wert, Farbe, Name). Jeder Teil trägt seinen
+/// Namen als Tooltip.
+fn donut(parts: &[(u64, String, String)], label: &str) -> String {
+    let total: u64 = parts.iter().map(|p| p.0).sum();
+    let mut rings = String::new();
+    if total == 0 {
+        rings.push_str("<circle class=\"track\" cx=\"21\" cy=\"21\" r=\"15.9155\"/>");
+    } else {
+        let shown: Vec<_> = parts.iter().filter(|p| p.0 > 0).collect();
+        // Ein Spalt in der Farbe der Fläche zwischen den Teilen.
+        let gap = if shown.len() > 1 { 0.8 } else { 0.0 };
+        let mut offset = 0.0;
+        for (n, color, name) in shown {
+            let share = *n as f64 * 100.0 / total as f64;
+            let len = (share - gap).max(0.4);
+            rings.push_str(&format!(
+                "<circle cx=\"21\" cy=\"21\" r=\"15.9155\" stroke=\"var({color})\" stroke-dasharray=\"{len:.3} {:.3}\" stroke-dashoffset=\"{:.3}\">\
+                 <title>{}: {} ({})</title></circle>",
+                100.0 - len,
+                25.0 - offset,
+                esc(name),
+                n,
+                percent(*n, total)
+            ));
+            offset += share;
+        }
+    }
+    format!(
+        "<svg class=\"donut\" viewBox=\"0 0 42 42\" role=\"img\" aria-label=\"{}\">{rings}\
+         <text x=\"21\" y=\"21\" class=\"donut-n\">{total}</text><text x=\"21\" y=\"27\" class=\"donut-k\">Anfragen</text></svg>",
+        esc(label)
+    )
+}
+
+/// Die Legende zum Ring: Farbe, Name, Zahl, Anteil.
+fn legend(parts: &[(u64, String, String)], titles: &[String]) -> String {
+    let total: u64 = parts.iter().map(|p| p.0).sum();
+    let rows: String = parts
+        .iter()
+        .zip(titles.iter().chain(std::iter::repeat(&String::new())))
+        .map(|((n, color, name), title)| {
+            let title = if title.is_empty() {
+                String::new()
+            } else {
+                format!(" title=\"{}\"", esc(title))
+            };
+            format!(
+                "<li{title}><span class=\"swatch\" style=\"background:var({color})\"></span>\
+                 <span class=\"name\">{}</span><span class=\"num\">{n}</span><span class=\"num muted\">{}</span></li>",
+                esc(name),
+                percent(*n, total)
+            )
+        })
+        .collect();
+    format!("<ul class=\"legend\">{rows}</ul>")
+}
+
+/// Säulen über die Zeit, älteste links. `label(i)`: wann Säule `i` war.
+fn bars(values: &[u64], label: impl Fn(usize) -> String, axis: [&str; 3]) -> String {
+    let max = values.iter().copied().max().unwrap_or(0).max(1);
+    let cols: String = values
+        .iter()
+        .enumerate()
+        .map(|(i, v)| {
+            let h = if *v == 0 { 0.0 } else { (*v as f64 * 100.0 / max as f64).max(2.0) };
+            format!(
+                "<span class=\"bar\" title=\"{}: {}\"><span style=\"height:{h:.1}%\"></span></span>",
+                esc(&label(i)),
+                plural(*v, "Anfrage", "Anfragen")
+            )
+        })
+        .collect();
+    format!(
+        "<div class=\"bars\" role=\"img\" aria-label=\"Anfragen über die Zeit, höchstens {max}\">\
+         <span class=\"bars-max muted\">{max}</span>{cols}</div>\
+         <div class=\"bars-axis muted\"><span>{}</span><span>{}</span><span>{}</span></div>",
+        axis[0], axis[1], axis[2]
+    )
+}
+
+/// Was der Server-Prozess gerade braucht, und die Last des ganzen Rechners —
+/// unter Linux (Home Assistant) aus /proc, sonst nichts.
+struct Machine {
+    /// Rechenzeit seit dem Start, ms.
+    cpu_ms: u64,
+    rss: u64,
+    load: Option<f64>,
+}
+
+fn machine() -> Option<Machine> {
+    let stat = std::fs::read_to_string("/proc/self/stat").ok()?;
+    // Nach dem Namen in Klammern: Feld 3 ist das erste, utime/stime 14/15.
+    let fields: Vec<&str> = stat.rsplit_once(')')?.1.split_whitespace().collect();
+    let ticks = |i: usize| fields.get(i).and_then(|f| f.parse::<u64>().ok());
+    // 100 Ticks je Sekunde: so unter Linux überall, wo Home Assistant läuft.
+    let cpu_ms = (ticks(11)? + ticks(12)?) * 10;
+    let rss = std::fs::read_to_string("/proc/self/status")
+        .ok()?
+        .lines()
+        .find_map(|l| l.strip_prefix("VmRSS:"))
+        .and_then(|v| v.trim().trim_end_matches("kB").trim().parse::<u64>().ok())
+        .map(|kb| kb * 1024)?;
+    let load = std::fs::read_to_string("/proc/loadavg")
+        .ok()
+        .and_then(|l| l.split_whitespace().next()?.parse::<f64>().ok());
+    Some(Machine { cpu_ms, rss, load })
+}
+
 /// Was die Seite zeigt, solange das Add-on läuft.
 #[derive(Clone)]
 pub struct Panel {
@@ -339,6 +522,7 @@ impl Ui {
     /// Die Seite. `id`: die gewählte Bibliothek (leer: die Hauptbibliothek),
     /// `pick`: die Nummer der gewählten Adresse (`?a=`), falls es mehrere gibt
     /// — ein Code gilt immer für genau eine.
+    #[allow(clippy::too_many_arguments)]
     pub fn page(
         &self,
         id: &str,
@@ -346,8 +530,10 @@ impl Ui {
         pick: usize,
         message: Option<&str>,
         error: Option<&str>,
-        // Wohin die Seite nach dem Laden springt: `band`, `ki` oder leer.
+        // Wohin die Seite nach dem Laden springt: `band`, `ki`, `nutzung` oder leer.
         to: &str,
+        // Der Zeitraum unter „Nutzung“, in Tagen.
+        days: u32,
     ) -> String {
         let now = now_ms();
         let entries = self.registry.list();
@@ -525,6 +711,7 @@ impl Ui {
 
         let band = self.band_section(sel, person, &shown, chosen, now);
         let ki = self.ai_section(sel);
+        let usage = self.usage_section(sel, days, now);
 
         let figures = match &shown.stats {
             None => String::new(),
@@ -634,7 +821,7 @@ impl Ui {
         // der Iframe rutscht aus dem Bild, es bleibt schwarz. `scrollTo`
         // bewegt nur dieses Fenster.
         let scroll = match to {
-            "band" | "ki" => format!(
+            "band" | "ki" | "nutzung" => format!(
                 "<script>addEventListener('load',()=>{{const b=document.getElementById('{to}');if(b)scrollTo(0,b.getBoundingClientRect().top+scrollY-16)}})</script>\n"
             ),
             _ => String::new(),
@@ -650,8 +837,246 @@ impl Ui {
             "{HEAD}<header><h1>Chordwright Data</h1><p class=\"muted\">{sub}</p></header>\n{banner}\
              <h2>Bibliotheken</h2>\n<div class=\"libs\">\n{cards}{create}\n</div>\n\
              <article>\n<h2>{}</h2>\n{chips}\n<div class=\"steps\">\n{steps}\n</div>\n\
-             <h3 id=\"band\">Band</h3>\n{band}\n<h3 id=\"ki\">KI</h3>\n{ki}\n<h3>Zahlen</h3>\n{figures}\n<h3>Verwalten</h3>\n{manage}\n</article>\n</main>\n{scroll}</body>\n</html>\n",
+             <h3 id=\"band\">Band</h3>\n{band}\n<h3 id=\"ki\">KI</h3>\n{ki}\n<h3>Zahlen</h3>\n{figures}\n<h3 id=\"nutzung\">Nutzung</h3>\n{usage}\n<h3>Verwalten</h3>\n{manage}\n</article>\n</main>\n{LOCAL_TIME}{scroll}</body>\n</html>\n",
             esc(&shown.name)
+        )
+    }
+
+    /// Wer die Bibliothek wann genutzt hat und was das den Rechner kostet:
+    /// Zahlen, wer (Ring), wofür (Ring), Verlauf, je Person, die Besuche.
+    fn usage_section(&self, sel: &str, days: u32, now: i64) -> String {
+        let Some(r) = self.hub.usage((!sel.is_empty()).then_some(sel), days) else {
+            return String::new();
+        };
+        let id_q = if sel.is_empty() {
+            String::new()
+        } else {
+            format!("i={}&amp;", esc(sel))
+        };
+        let chips: String = USAGE_DAYS
+            .iter()
+            .map(|(d, label)| {
+                let current = if *d == r.days {
+                    " aria-current=\"true\""
+                } else {
+                    ""
+                };
+                format!("<a href=\"?{id_q}u={d}&amp;to=nutzung\"{current}>{label}</a>")
+            })
+            .collect();
+        let chips = format!("<nav class=\"chips\" aria-label=\"Zeitraum\">{chips}</nav>");
+
+        let mut tiles = vec![
+            (
+                "Anfragen".to_string(),
+                r.total.requests.to_string(),
+                "An diese Bibliothek, im gewählten Zeitraum".to_string(),
+            ),
+            (
+                "Personen".into(),
+                r.people
+                    .iter()
+                    .filter(|p| p.role != "denied")
+                    .count()
+                    .to_string(),
+                "Musiker, Apps mit Namen und Browser mit Code".into(),
+            ),
+            (
+                "Rechenzeit".into(),
+                busy(r.total.busy_us),
+                "So lange war der Server mit diesen Anfragen beschäftigt".into(),
+            ),
+            (
+                "Übertragen".into(),
+                size(r.total.bytes),
+                "Gesendet und empfangen, ohne Live-Verbindungen".into(),
+            ),
+        ];
+        if let Some(m) = machine() {
+            let up = (now - self.hub.started()).max(1) as f64;
+            let cpu = m.cpu_ms as f64 * 100.0 / up;
+            tiles.push((
+                "CPU Ø".into(),
+                format!("{:.1} %", cpu).replace('.', ","),
+                "Anteil eines Kerns, den das ganze Add-on seit dem Start im Schnitt braucht".into(),
+            ));
+            tiles.push((
+                "Arbeitsspeicher".into(),
+                size(m.rss),
+                "Was das Add-on gerade belegt".into(),
+            ));
+            if let Some(load) = m.load {
+                let cores = std::thread::available_parallelism().map_or(1, |n| n.get());
+                tiles.push((
+                    "Last des Rechners".into(),
+                    format!("{load:.2}").replace('.', ","),
+                    format!("Home Assistant samt allem, letzte Minute; {cores} Kerne — unter {cores} hat er Luft"),
+                ));
+            }
+        }
+        let tiles: String = tiles
+            .iter()
+            .map(|(k, v, title)| {
+                format!(
+                    "<div class=\"tile\" title=\"{}\"><span class=\"big\">{}</span><span class=\"muted\">{k}</span></div>",
+                    esc(title),
+                    esc(v)
+                )
+            })
+            .collect();
+
+        if r.total.requests == 0 {
+            return format!(
+                "{chips}<div class=\"tiles\">{tiles}</div>\n<p class=\"muted\">In diesem Zeitraum hat niemand auf die Bibliothek zugegriffen.</p>"
+            );
+        }
+
+        // Wer: die ersten fünf mit eigener Farbe, der Rest zusammen.
+        let mut who: Vec<(u64, String, String)> = r
+            .people
+            .iter()
+            .take(USAGE_SLOTS)
+            .enumerate()
+            .map(|(i, p)| (p.tally.requests, format!("--c{}", i + 1), p.name.clone()))
+            .collect();
+        let rest: u64 = r
+            .people
+            .iter()
+            .skip(USAGE_SLOTS)
+            .map(|p| p.tally.requests)
+            .sum();
+        if rest > 0 {
+            who.push((
+                rest,
+                "--muted".into(),
+                format!("{} weitere", r.people.len() - USAGE_SLOTS),
+            ));
+        }
+        let who_titles: Vec<String> = r
+            .people
+            .iter()
+            .take(USAGE_SLOTS)
+            .map(|p| role_label(&p.role).to_string())
+            .collect();
+        // Wofür: jede Art behält ihre Farbe, auch wenn eine fehlt.
+        let what: Vec<(u64, String, String)> = USAGE_KINDS
+            .iter()
+            .enumerate()
+            .filter_map(|(i, k)| {
+                let n = r.total.kinds.get(*k).copied().unwrap_or(0);
+                (n > 0).then(|| (n, format!("--c{}", i + 1), kind_label(k).to_string()))
+            })
+            .collect();
+        let what_titles: Vec<String> = USAGE_KINDS
+            .iter()
+            .filter(|k| r.total.kinds.get(**k).copied().unwrap_or(0) > 0)
+            .map(|k| kind_title(k).to_string())
+            .collect();
+        let pies = format!(
+            "<div class=\"pies\">\
+             <figure><figcaption>Wer</figcaption><div class=\"pie\">{}{}</div></figure>\
+             <figure><figcaption>Wofür</figcaption><div class=\"pie\">{}{}</div></figure></div>",
+            donut(&who, "Anfragen je Person"),
+            legend(&who, &who_titles),
+            donut(&what, "Anfragen je Art"),
+            legend(&what, &what_titles)
+        );
+
+        let timeline = if r.days == 1 {
+            bars(
+                &r.hourly,
+                |i| match 23 - i {
+                    0 => "diese Stunde".into(),
+                    1 => "vor 1 Std.".into(),
+                    n => format!("vor {n} Std."),
+                },
+                ["vor 24 Std.", "vor 12 Std.", "jetzt"],
+            )
+        } else {
+            let n = r.daily.len();
+            let mid = format!("vor {} Tagen", n / 2);
+            let first = format!("vor {n} Tagen");
+            bars(
+                &r.daily,
+                |i| match n - 1 - i {
+                    0 => "letzte 24 Std.".into(),
+                    1 => "vor 1–2 Tagen".into(),
+                    d => format!("vor {d}–{} Tagen", d + 1),
+                },
+                [&first, &mid, "jetzt"],
+            )
+        };
+
+        let people: String = r
+            .people
+            .iter()
+            .enumerate()
+            .map(|(i, p)| {
+                let color = if i < USAGE_SLOTS {
+                    format!("--c{}", i + 1)
+                } else {
+                    "--muted".into()
+                };
+                let kinds: String = USAGE_KINDS
+                    .iter()
+                    .filter_map(|k| {
+                        let n = p.tally.kinds.get(*k)?;
+                        Some(format!("{} {n}", kind_label(k)))
+                    })
+                    .collect::<Vec<_>>()
+                    .join(" · ");
+                format!(
+                    "<tr><td><span class=\"swatch\" style=\"background:var({color})\"></span><b>{}</b><br><span class=\"muted small\">{}</span></td>\
+                     <td class=\"num\" title=\"{}\">{}</td><td class=\"num\">{}</td><td class=\"num\">{}</td><td>{}</td></tr>",
+                    esc(&p.name),
+                    role_label(&p.role),
+                    esc(&kinds),
+                    p.tally.requests,
+                    busy(p.tally.busy_us),
+                    size(p.tally.bytes),
+                    moment(p.last, now)
+                )
+            })
+            .collect();
+        let table = format!(
+            "<div class=\"scroll\"><table class=\"usage\"><thead><tr><th>Wer</th><th class=\"num\">Anfragen</th>\
+             <th class=\"num\" title=\"So lange war der Server mit den Anfragen beschäftigt\">Rechenzeit</th>\
+             <th class=\"num\">Übertragen</th><th>Zuletzt</th></tr></thead><tbody>{people}</tbody></table></div>"
+        );
+
+        let visits: String = r
+            .visits
+            .iter()
+            .take(30)
+            .map(|v| {
+                let kinds: Vec<&str> = USAGE_KINDS
+                    .iter()
+                    .filter(|k| v.kinds.contains_key(**k))
+                    .map(|k| kind_label(k))
+                    .collect();
+                let span = if v.to - v.from < 60_000 {
+                    moment(v.from, now)
+                } else {
+                    format!(
+                        "{} – <time data-t=\"{}\" data-only=\"time\">{} Min. lang</time>",
+                        moment(v.from, now),
+                        v.to,
+                        (v.to - v.from) / 60_000
+                    )
+                };
+                format!(
+                    "<li><span class=\"what\">{}</span> <span class=\"muted\">{} · {} · {span}</span></li>",
+                    esc(&v.name),
+                    kinds.join(", "),
+                    plural(v.requests, "Anfrage", "Anfragen")
+                )
+            })
+            .collect();
+
+        format!(
+            "{chips}<div class=\"tiles\">{tiles}</div>\n{pies}\n\
+             <h4>Verlauf</h4>\n{timeline}\n<h4>Je Person</h4>\n{table}\n\
+             <h4>Besuche</h4>\n<ul class=\"rows\">{visits}</ul>"
         )
     }
 
@@ -1054,11 +1479,46 @@ const HEAD: &str = r#"<!doctype html>
   button.danger { color: var(--danger); }
   .banner { padding: 10px 14px; border-radius: 12px; border: 1px solid var(--accent); }
   .banner.error { border-color: var(--danger); color: var(--danger); }
+  :root { --c1: #2a78d6; --c2: #eb6834; --c3: #1baf7a; --c4: #eda100; --c5: #e87ba4; --c6: #008300; --c7: #6250d6; --c8: #e34948; }
+  @media (prefers-color-scheme: dark) { :root { --c1: #3987e5; --c2: #d95926; --c3: #199e70; --c4: #c98500; --c5: #d55181; --c6: #008300; --c7: #9085e9; --c8: #e66767; } }
+  h4 { font-size: 14px; margin: 20px 0 8px; color: var(--muted); font-weight: 600; }
+  .small { font-size: 12px; }
+  .pies { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 12px; margin-top: 12px; }
+  figure { margin: 0; padding: 12px 14px; border: 1px solid var(--line); border-radius: 12px; background: var(--card); min-width: 0; }
+  figcaption { font-weight: 600; margin-bottom: 8px; }
+  .pie { display: flex; align-items: center; gap: 16px; }
+  .donut { flex: none; width: 120px; height: 120px; }
+  .donut circle { fill: none; stroke-width: 6; }
+  .donut .track { stroke: var(--line); }
+  .donut-n { text-anchor: middle; font-size: 8px; font-weight: 600; fill: var(--fg); }
+  .donut-k { text-anchor: middle; font-size: 3.6px; fill: var(--muted); }
+  .legend { list-style: none; margin: 0; padding: 0; flex: 1; min-width: 0; font-size: 13px; }
+  .legend li { display: flex; align-items: center; gap: 8px; padding: 3px 0; }
+  .legend .name { flex: 1; min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+  .swatch { display: inline-block; flex: none; width: 10px; height: 10px; border-radius: 3px; margin-right: 6px; vertical-align: baseline; }
+  .legend .swatch { margin: 0; }
+  .num { font-variant-numeric: tabular-nums; text-align: right; }
+  .bars { position: relative; display: flex; align-items: flex-end; gap: 2px; height: 120px; padding: 16px 0 0; border-bottom: 1px solid var(--line); }
+  .bar { flex: 1; height: 100%; display: flex; align-items: flex-end; min-width: 0; }
+  .bar > span { width: 100%; background: var(--accent); border-radius: 3px 3px 0 0; }
+  .bar:hover > span { opacity: .75; }
+  .bars-max { position: absolute; top: 0; left: 0; font-size: 11px; }
+  .bars-axis { display: flex; justify-content: space-between; font-size: 12px; margin-top: 4px; }
+  .scroll { overflow-x: auto; }
+  table.usage { width: 100%; border-collapse: collapse; font-size: 14px; }
+  table.usage th { text-align: left; font-weight: 600; color: var(--muted); font-size: 12px; padding: 6px 8px; border-bottom: 1px solid var(--line); }
+  table.usage th.num { text-align: right; }
+  table.usage td { padding: 6px 8px; border-bottom: 1px solid var(--line); vertical-align: top; white-space: nowrap; }
+  table.usage td:first-child { white-space: normal; padding-left: 0; }
 </style>
 </head>
 <body>
 <main>
 "#;
+
+/// Zeitpunkte in der Zeitzone des Geräts, das die Seite ansieht; ohne
+/// Skript bleibt „vor 5 Min.“ stehen.
+const LOCAL_TIME: &str = "<script>for(const t of document.querySelectorAll('time[data-t]')){const d=new Date(+t.dataset.t);t.title=t.textContent;t.dateTime=d.toISOString();t.textContent=t.dataset.only==='time'?d.toLocaleTimeString('de-DE',{hour:'2-digit',minute:'2-digit'}):d.toLocaleString('de-DE',{weekday:'short',day:'numeric',month:'numeric',hour:'2-digit',minute:'2-digit'})}</script>\n";
 
 /// Nur Home Assistants Ingress-Proxy (und der eigene Rechner, für die Tests).
 fn allowed(ip: IpAddr) -> bool {
@@ -1148,7 +1608,7 @@ fn answer(mut stream: TcpStream, ui: &Ui) {
                 &mut stream,
                 "400 Bad Request",
                 html,
-                &ui.page(&id, "", 0, None, Some(&e), ""),
+                &ui.page(&id, "", 0, None, Some(&e), "", 7),
             ),
         };
     }
@@ -1183,6 +1643,7 @@ fn answer(mut stream: TcpStream, ui: &Ui) {
             message,
             None,
             param("to").as_deref().unwrap_or_default(),
+            param("u").and_then(|u| u.parse().ok()).unwrap_or(7),
         ),
     );
 }
@@ -1264,6 +1725,82 @@ mod tests {
         assert!(page.contains("Diesen Monat noch keine Fragen"));
         ui.act(&form("ai-remove")).unwrap();
         assert!(registry.assistant("").is_none());
+        drop(server);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn the_usage_section() {
+        use chordwright_server::{Options, Server};
+        let root = std::env::temp_dir().join(format!("cw-panel-usage-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let (data, share) = (root.join("data"), root.join("share"));
+        std::fs::create_dir_all(&data).unwrap();
+        let server = Server::start(Options {
+            dir: share.join("chordwright"),
+            token: "owner".into(),
+            port: 0,
+            ..Options::default()
+        })
+        .unwrap();
+        let port = server.ready().port;
+        let ask = |token: &str, method: &str, path: &str, extra: &str, body: &str| {
+            let mut stream = TcpStream::connect(("127.0.0.1", port)).unwrap();
+            write!(
+                stream,
+                "{method} {path} HTTP/1.1\r\nhost: x\r\nauthorization: Bearer {token}\r\nx-chordwright-client: app1\r\n{extra}connection: close\r\ncontent-length: {}\r\n\r\n{body}",
+                body.len()
+            )
+            .unwrap();
+            let mut answer = String::new();
+            stream.read_to_string(&mut answer).unwrap();
+            answer
+        };
+        let registry = Arc::new(Registry::open(
+            &data,
+            &share,
+            "chordwright",
+            0.0,
+            3,
+            server.hub(),
+        ));
+        let ui = Ui {
+            panel: Panel {
+                addresses: Vec::new(),
+                scheme: "https".into(),
+                port: "4174".into(),
+                token: "owner".into(),
+                own_ca: false,
+                folder: "chordwright".into(),
+                samba: false,
+                public_url: None,
+            },
+            registry,
+            hub: server.hub(),
+            secret: "s".into(),
+        };
+        assert!(ui.usage_section("", 7, now_ms()).contains("hat niemand"));
+
+        // A read before the app gave its name, a write with it, a read after.
+        ask("owner", "GET", "/api/library", "", "");
+        ask(
+            "owner",
+            "PUT",
+            "/api/user/record/x",
+            "x-chordwright-user: J%C3%BCrgen\r\n",
+            "\"1\"",
+        );
+        ask("owner", "GET", "/api/library", "", "");
+        ask("wrong", "GET", "/api/library", "", "");
+        let page = ui.usage_section("", 7, now_ms());
+        assert!(page.contains("<b>Jürgen</b>"), "{page}");
+        assert!(page.contains("Ohne Namen") && page.contains("Abgewiesen"));
+        assert!(page.contains("Schreiben") && page.contains("class=\"donut\""));
+        assert!(page.contains("aria-current=\"true\">7 Tage"));
+        let report = server.hub().usage(None, 1).unwrap();
+        assert_eq!(report.total.requests, 4);
+        assert_eq!(report.people[0].name, "Jürgen");
+        assert_eq!(report.people[0].tally.requests, 2);
         drop(server);
         let _ = std::fs::remove_dir_all(&root);
     }

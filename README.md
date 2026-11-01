@@ -56,8 +56,8 @@ writes that folder.
   `…-x86_64-apple-darwin`, `…-x86_64-pc-windows-msvc.exe`.
 - **The Home Assistant add-on**: the same program, `--addon`
   (`src/addon.rs`), with a web UI behind *Open Web UI* (`src/panel.rs`): every
-  library with its songs, sets, connected devices, last changes, backups and
-  open stages; a QR code to connect a device; and more libraries, added,
+  library with its songs, sets, connected devices, last changes, backups,
+  open stages and who used it when (`src/usage.rs`); a QR code to connect a device; and more libraries, added,
   renamed, given a new token or removed there (`src/instances.rs`). Its image fetches the static Linux file of the release that
   matches the add-on's version and checks it against `SHA256SUMS`; nothing is
   compiled on the Home Assistant machine. So a release comes first (tag →

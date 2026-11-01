@@ -53,7 +53,7 @@ use std::time::{Duration, Instant};
 use bytes::Bytes;
 use http_body_util::combinators::BoxBody;
 use http_body_util::{BodyExt, Full};
-use hyper::body::{Frame, Incoming};
+use hyper::body::{Body as _, Frame, Incoming};
 use hyper::{HeaderMap, Method, Request, Response, StatusCode};
 use serde_json::{json, Value};
 use tokio::sync::mpsc;
@@ -65,6 +65,7 @@ use crate::pairing::{Attempt, Pairing};
 use crate::site::{self, Site};
 use crate::stage::{clean_room, Answer, Stage};
 use crate::store::{is_database, is_valid_key, key_for_path, Expect, Outcome, Store, DATABASES};
+use crate::usage::{Caller, Usage};
 use crate::util::{decode_component, now_ms, number, parse_query};
 use crate::{drops_songs, Member, ROLES};
 
@@ -149,6 +150,8 @@ pub struct Shared {
     pub store: Store,
     pub backups: Backups,
     pub journal: Journal,
+    /// Who used the library, and how much (usage.rs).
+    pub usage: Usage,
     pub stage: Stage,
     pub listeners: Arc<Listeners>,
     /// A write we just made comes back through the watcher too; the client id
@@ -362,11 +365,51 @@ async fn blocking<T: Send + 'static>(
         .expect("file work panicked")
 }
 
-pub async fn handle(s: Arc<Shared>, req: Request<Incoming>) -> Result<Response<Body>, Infallible> {
-    Ok(route(s, req).await)
+/// What `handle` books for a request once it is answered (usage.rs).
+#[derive(Default)]
+struct Seen {
+    caller: Option<Caller>,
+    kind: &'static str,
+    name: Option<String>,
+    client: Option<String>,
 }
 
-async fn route(s: Arc<Shared>, req: Request<Incoming>) -> Response<Body> {
+pub async fn handle(s: Arc<Shared>, req: Request<Incoming>) -> Result<Response<Body>, Infallible> {
+    let start = Instant::now();
+    let bytes_in = header(req.headers(), "content-length")
+        .and_then(|n| n.parse::<u64>().ok())
+        .unwrap_or(0);
+    let mut seen = Seen::default();
+    let res = route(s.clone(), req, &mut seen).await;
+    if let Some(caller) = &seen.caller {
+        let bytes_out = res.body().size_hint().exact().unwrap_or(0);
+        s.usage.record(
+            caller,
+            seen.name.as_deref(),
+            seen.client.as_deref(),
+            seen.kind,
+            start.elapsed().as_micros() as u64,
+            bytes_in + bytes_out,
+        );
+    }
+    Ok(res)
+}
+
+/// What a request to `/api/<part>` is for, in the usage figures.
+fn kind_of(part: Option<&str>, method: &Method) -> &'static str {
+    match part {
+        Some("events") => "live",
+        Some("health" | "time") => "check",
+        Some("stage") => "stage",
+        Some("assistant") => "assistant",
+        Some("backups") => "backups",
+        Some("band" | "changes") => "read",
+        _ if method == Method::GET || method == Method::HEAD => "read",
+        _ => "write",
+    }
+}
+
+async fn route(s: Arc<Shared>, req: Request<Incoming>, seen: &mut Seen) -> Response<Body> {
     // Chrome asks before a public page may reach a private address (Private
     // Network Access); this header is the server's yes.
     if req.method() == Method::OPTIONS {
@@ -422,6 +465,14 @@ async fn route(s: Arc<Shared>, req: Request<Incoming>) -> Response<Body> {
         .and_then(|h| h.strip_prefix("Bearer ").map(String::from))
         .or_else(|| param("token"))
         .unwrap_or_default();
+    seen.kind = kind_of(part(1), &method);
+    seen.name = user_of(req.headers());
+    seen.client = header(req.headers(), "x-chordwright-client").or_else(|| param("client"));
+    let caller = |access: &Access| match access {
+        Access::Member(m) => Caller::Member(m.id.clone(), m.name.clone()),
+        Access::Owner if s.token.is_empty() || given == s.token => Caller::Owner,
+        Access::Owner => Caller::Guest,
+    };
     if part(1) == Some("health") {
         let mut health = json!({
                 "ok": true,
@@ -438,6 +489,9 @@ async fn route(s: Arc<Shared>, req: Request<Incoming>) -> Response<Body> {
         // With a token, what it may do — so a musician's app knows who it is
         // and what not to write.
         if !given.is_empty() {
+            if let Ok(Some(who)) = s.access(&given) {
+                seen.caller = Some(caller(&who));
+            }
             health["access"] = match s.access(&given) {
                 Ok(Some(Access::Owner)) => json!("owner"),
                 Ok(Some(Access::Member(m))) => {
@@ -460,9 +514,20 @@ async fn route(s: Arc<Shared>, req: Request<Incoming>) -> Response<Body> {
     }
     let access = match s.access(&given) {
         Ok(Some(who)) => who,
-        Ok(None) => return error(401, "unauthorised"),
-        Err(()) => return error(401, "expired"),
+        denied => {
+            seen.caller = Some(Caller::Denied);
+            seen.kind = "denied";
+            return error(
+                401,
+                if denied.is_err() {
+                    "expired"
+                } else {
+                    "unauthorised"
+                },
+            );
+        }
     };
+    seen.caller = Some(caller(&access));
     let read_only = || error(403, "read only");
 
     match part(1) {

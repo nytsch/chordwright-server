@@ -43,7 +43,12 @@ mod pairing;
 mod site;
 mod stage;
 mod store;
+mod usage;
 mod util;
+
+pub use usage::{
+    Tally as UsageTally, UsagePerson, UsageReport, Visit as UsageVisit, KINDS as USAGE_KINDS,
+};
 
 use std::collections::{BTreeMap, HashMap};
 use std::net::IpAddr;
@@ -69,6 +74,7 @@ use http::{Listeners, Shared};
 use journal::Journal;
 use stage::Stage;
 use store::Store;
+use usage::Usage;
 
 /// What the server is started with — the program's command line.
 #[derive(Clone, Debug)]
@@ -392,6 +398,7 @@ impl Drop for Instance {
             task.abort();
         }
         self.shared.journal.flush();
+        self.shared.usage.flush();
     }
 }
 
@@ -544,6 +551,16 @@ impl Hub {
             Some(id) => self.instances().get(id)?.shared.clone(),
         };
         Some(stats_of(&shared))
+    }
+
+    /// Who used the library under `/i/<id>` (None: the server's own) in the
+    /// last `days` days.
+    pub fn usage(&self, id: Option<&str>, days: u32) -> Option<UsageReport> {
+        let shared = match id {
+            None => self.0.main.clone(),
+            Some(id) => self.instances().get(id)?.shared.clone(),
+        };
+        Some(shared.usage.report(days))
     }
 
     fn instances(&self) -> std::sync::RwLockReadGuard<'_, BTreeMap<String, Instance>> {
@@ -875,6 +892,7 @@ fn library_state(
         store,
         backups: Backups::new(&root, backup_keep),
         journal: Journal::open(&root),
+        usage: Usage::open(&root),
         members: RwLock::new(Vec::new()),
         desk: Arc::new(assistant::Desk::open(&root)),
         stage: Stage::new(move |snapshot| stage_listeners.send(http::stage_line(&snapshot))),
@@ -931,6 +949,16 @@ fn background(shared: &Arc<Shared>, runtime: &tokio::runtime::Handle) -> Vec<Joi
             saver.journal.wake.notified().await;
             let s = saver.clone();
             let _ = tokio::task::spawn_blocking(move || s.journal.flush()).await;
+        }
+    }));
+    let counter = shared.clone();
+    tasks.push(runtime.spawn(async move {
+        let mut tick = tokio::time::interval(Duration::from_secs(60));
+        tick.tick().await;
+        loop {
+            tick.tick().await;
+            let s = counter.clone();
+            let _ = tokio::task::spawn_blocking(move || s.usage.flush()).await;
         }
     }));
     let pinger = shared.clone();
