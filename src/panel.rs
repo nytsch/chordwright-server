@@ -125,6 +125,23 @@ pub fn order_addresses(addresses: &[String]) -> Vec<String> {
     out
 }
 
+/// Die Musiker in der Liste: wer mehr darf, steht oben (Songs und Sets, dann
+/// Sets, dann nur lesen), innerhalb gleicher Rechte nach Namen, ohne auf
+/// Groß- und Kleinschreibung zu achten.
+pub fn order_members(members: &mut [Member]) {
+    let rank = |c: Can| match c {
+        Can::All => 0,
+        Can::Sets => 1,
+        Can::Read => 2,
+    };
+    members.sort_by(|a, b| {
+        rank(a.can)
+            .cmp(&rank(b.can))
+            .then_with(|| a.name.to_lowercase().cmp(&b.name.to_lowercase()))
+            .then_with(|| a.name.cmp(&b.name))
+    });
+}
+
 /// Wo die App den Server findet, zur Wahl über dem QR-Code: die Adressen im
 /// Heimnetz, mit Tunnel zuletzt die von draußen. Je Ort die Beschriftung und
 /// die Adresse ohne Pfad.
@@ -1132,7 +1149,8 @@ impl Ui {
             None => "bis auf Widerruf".to_string(),
             Some(until) => left(until, now),
         };
-        let members = self.registry.members(sel);
+        let mut members = self.registry.members(sel);
+        order_members(&mut members);
         let rows: String = members
             .iter()
             .map(|m| {
@@ -1853,5 +1871,29 @@ mod tests {
         assert_eq!(ago(0, 3 * 86_400_000), "vor 3 Tagen");
         assert_eq!(size(1_300_000), "1,2 MB");
         assert_eq!(size(2048), "2 KB");
+    }
+
+    #[test]
+    fn members_by_rights_then_name() {
+        let m = |name: &str, can: Can| Member {
+            id: name.to_lowercase(),
+            name: name.into(),
+            token: String::new(),
+            roles: vec![],
+            until: None,
+            can,
+            ai: None,
+        };
+        let mut list = vec![
+            m("zoe", Can::Read),
+            m("Anna", Can::Read),
+            m("Bert", Can::Sets),
+            m("Xaver", Can::All),
+            m("carla", Can::All),
+            m("Alex", Can::Sets),
+        ];
+        order_members(&mut list);
+        let names: Vec<&str> = list.iter().map(|m| m.name.as_str()).collect();
+        assert_eq!(names, ["carla", "Xaver", "Alex", "Bert", "Anna", "zoe"]);
     }
 }
