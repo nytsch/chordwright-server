@@ -1,5 +1,11 @@
 # Changelog
 
+## 2.5.2
+
+- Web-UI, **Band**: Die Liste der Musiker und der gewählte Musiker stehen nebeneinander, am Handy untereinander. Eine lange Liste scrollt für sich, ab neun Musikern mit einem Suchfeld; der gewählte bleibt darin im Bild, und sein QR-Code steht beim Durchklicken immer an derselben Stelle.
+- Den QR-Code eines Musikers weitergeben: **Bild kopieren** legt ihn mit dem Namen darunter als Bild in die Zwischenablage, zum Einfügen in eine Nachricht. **Link kopieren** kopiert den Link dahinter — wer ihn am Handy antippt, ist gleich verbunden. **Speichern** lädt ihn als PNG herunter, am Handy teilt **Teilen** ihn direkt. Auch Rechtsklick oder langes Tippen auf den Code kopiert ihn jetzt als Bild. Der QR-Code der Bibliothek selbst bekommt diese Knöpfe nicht: Ihr Token darf alles.
+- Mit eigener CA und ohne Tunnel bekommt jetzt auch jeder Musiker zwei QR-Codes wie die Bibliothek: **1 Zertifikat** (einmal pro Gerät), dann **2 Verbinden**, das Chordwright gleich mit seinem Zugang öffnet. Bisher fehlte ihm das Zertifikat, und sein Gerät ließ die App nicht an den Server. Beide lassen sich kopieren und verschicken.
+
 ## 2.5.1
 
 - Web-UI, Abschnitt **Band**: Die Musiker stehen jetzt nach ihren Rechten sortiert — wer Songs und Sets bearbeiten darf oben, dann wer Sets bearbeiten darf, dann wer nur liest — und innerhalb davon alphabetisch nach Namen.
