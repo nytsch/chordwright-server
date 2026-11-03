@@ -1244,14 +1244,45 @@ impl Ui {
                 } else {
                     "<p class=\"note\">Nur im Heimnetz erreichbar. Für unterwegs einen Tunnel einrichten und seine Adresse unter <b>Konfiguration → public_url</b> eintragen (siehe Dokumentation).</p>\n  ".to_string()
                 };
+                // Ohne Tunnel und mit eigener CA braucht auch der Musiker
+                // erst das Zertifikat, sonst lässt sein Gerät die App nicht
+                // an den Server. Über den Tunnel hat Cloudflare ein echtes.
+                let two = self.panel.own_ca && self.panel.public_url.is_none();
+                let ca_step = if two {
+                    let root = server.strip_suffix(&shown.path).unwrap_or(server);
+                    let ca = format!("{root}/ca.crt");
+                    format!(
+                        "<section>\n  <h3><span class=\"n\">1</span>Zertifikat <small>einmal pro Gerät</small></h3>\n  {}\n  \
+                         <p>Zuerst: mit der Kamera scannen und öffnen. Am iPhone danach unter <b>Einstellungen → Allgemein → Info →\n  \
+                         Zertifikatsvertrauenseinstellungen</b> „Chordwright lokale CA“ einschalten.</p>\n</section>\n",
+                        qr_share(
+                            &ca,
+                            "QR-Code: Zertifikat laden",
+                            "Chordwright: 1. Zertifikat",
+                            "Chordwright - 1 Zertifikat.png"
+                        )
+                    )
+                } else {
+                    String::new()
+                };
                 format!(
-                    "<section>\n  {}\n  {reach}<p>Mit der Kamera scannen, oder in Chordwright unter <b>Einstellungen → Datenquelle → Server hinzufügen</b> „QR-Code scannen“.</p>\n  \
+                    "{ca_step}<section>\n  <h3>{}Verbinden <small>öffnet Chordwright mit dem Zugang von {}</small></h3>\n  {}\n  {reach}<p>Mit der Kamera scannen, oder in Chordwright unter <b>Einstellungen → Datenquelle → Server hinzufügen</b> „QR-Code scannen“.</p>\n  \
                      <dl>\n    <dt>Adresse</dt><dd class=\"value\">{}</dd>\n    <dt>Token</dt><dd class=\"value\">{}</dd>\n  </dl>\n</section>\n",
+                    if two { "<span class=\"n\">2</span>" } else { "" },
+                    esc(&m.name),
                     qr_share(
                         &link,
                         &format!("QR-Code: Chordwright für {} verbinden", m.name),
-                        &format!("Chordwright für {}", m.name),
-                        &format!("Chordwright - {}.png", file_name(&m.name))
+                        &if two {
+                            format!("Chordwright: 2. Verbinden für {}", m.name)
+                        } else {
+                            format!("Chordwright für {}", m.name)
+                        },
+                        &format!(
+                            "Chordwright - {}{}.png",
+                            if two { "2 " } else { "" },
+                            file_name(&m.name)
+                        )
                     ),
                     esc(server),
                     esc(&m.token)
@@ -1886,14 +1917,28 @@ mod tests {
             "the library's own code is not for passing on"
         );
         let page = ui.page("", &picked, 0, None, None, "band", 30);
-        if let Ok(out) = std::env::var("CW_PANEL_DUMP") {
-            std::fs::write(out, &page).unwrap();
-        }
         assert!(
             page.contains("data-do=\"image\"")
                 && page.contains("data-file=\"Chordwright - Musiker_7.png\"")
         );
         assert!(page.contains("data-caption=\"Chordwright für Musiker/7\""));
+        assert!(
+            !page.contains("1 Zertifikat"),
+            "without an own CA one code is enough"
+        );
+        let ui = Ui {
+            panel: Panel {
+                own_ca: true,
+                ..ui.panel
+            },
+            ..ui
+        };
+        let page = ui.page("", &picked, 0, None, None, "band", 30);
+        if let Ok(out) = std::env::var("CW_PANEL_DUMP") {
+            std::fs::write(out, &page).unwrap();
+        }
+        assert!(page.contains("data-link=\"https://192.168.1.5:4174/ca.crt\""));
+        assert!(page.contains("data-file=\"Chordwright - 2 Musiker_7.png\""));
         assert_eq!(file_name("Sönke (Aushilfe)"), "Soenke (Aushilfe)");
         drop(server);
         let _ = std::fs::remove_dir_all(&root);
