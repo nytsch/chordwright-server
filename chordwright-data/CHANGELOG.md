@@ -1,5 +1,10 @@
 # Changelog
 
+## 2.5.1
+
+- Web-UI, **Band**: Die Liste der Musiker und der gewählte Musiker stehen nebeneinander, am Handy untereinander. Eine lange Liste scrollt für sich, ab neun Musikern mit einem Suchfeld; der gewählte bleibt darin im Bild, und sein QR-Code steht beim Durchklicken immer an derselben Stelle.
+- Den QR-Code eines Musikers weitergeben: **Bild kopieren** legt ihn mit dem Namen darunter als Bild in die Zwischenablage, zum Einfügen in eine Nachricht. **Link kopieren** kopiert den Link dahinter — wer ihn am Handy antippt, ist gleich verbunden. **Speichern** lädt ihn als PNG herunter, am Handy teilt **Teilen** ihn direkt. Auch Rechtsklick oder langes Tippen auf den Code kopiert ihn jetzt als Bild. Der QR-Code der Bibliothek selbst bekommt diese Knöpfe nicht: Ihr Token darf alles.
+
 ## 2.5.0
 
 - Nutzung: In der Web-UI bekommt jede Bibliothek einen Abschnitt **Nutzung** — wer wann auf die Bibliothek zugegriffen hat, für die letzten 24 Stunden, 7 oder 30 Tage. Zahlen zu Anfragen, Personen, Rechenzeit und übertragenen Daten, dazu die Last des Add-ons (CPU im Schnitt, Arbeitsspeicher) und des ganzen Rechners. Zwei Ringdiagramme zeigen, wer wie viel angefragt hat und wofür (Lesen, Schreiben, Live-Verbindung, Bühne, KI, Sicherungen, Abgewiesen), Säulen den Verlauf, eine Tabelle jede Person mit ihrem letzten Zugriff, und darunter die einzelnen Besuche mit Uhrzeit.

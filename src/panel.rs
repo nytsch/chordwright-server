@@ -183,6 +183,44 @@ fn qr_svg(text: &str, label: &str) -> String {
     )
 }
 
+/// Ein QR-Code zum Weitergeben: dazu Knöpfe, ihn als Bild zu kopieren, zu
+/// speichern oder (am Handy) zu teilen, und den Link zu kopieren — das
+/// Skript `SHARE` zeichnet ihn dafür als PNG, mit `caption` darunter. Nur für
+/// die Zugänge der Musiker: der Token der Bibliothek darf alles.
+fn qr_share(link: &str, label: &str, caption: &str, file: &str) -> String {
+    format!(
+        "<div class=\"share\" data-link=\"{}\" data-caption=\"{}\" data-file=\"{}\">{}\
+         <div class=\"tools\" hidden>\
+         <button type=\"button\" class=\"quiet\" data-do=\"image\" title=\"Als Bild in die Zwischenablage, zum Einfügen in eine Nachricht\">Bild kopieren</button>\
+         <button type=\"button\" class=\"quiet\" data-do=\"link\" title=\"Wer den Link am Handy antippt, ist gleich verbunden\">Link kopieren</button>\
+         <button type=\"button\" class=\"quiet\" data-do=\"save\">Speichern</button>\
+         <button type=\"button\" class=\"quiet\" data-do=\"share\" hidden>Teilen</button>\
+         </div></div>",
+        esc(link),
+        esc(caption),
+        esc(file),
+        qr_svg(link, label)
+    )
+}
+
+/// Ein Name als Dateiname, nur in ASCII: Chromium verwirft einen Namen mit
+/// Umlauten im `download`-Attribut und speichert „download“.
+fn file_name(name: &str) -> String {
+    name.chars()
+        .map(|c| match c {
+            'ä' => "ae".into(),
+            'ö' => "oe".into(),
+            'ü' => "ue".into(),
+            'Ä' => "Ae".into(),
+            'Ö' => "Oe".into(),
+            'Ü' => "Ue".into(),
+            'ß' => "ss".into(),
+            'A'..='Z' | 'a'..='z' | '0'..='9' | ' ' | '-' | '.' | '(' | ')' => c.to_string(),
+            _ => "_".into(),
+        })
+        .collect()
+}
+
 fn now_ms() -> i64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -837,7 +875,7 @@ impl Ui {
             "{HEAD}<header><h1>Chordwright Data</h1><p class=\"muted\">{sub}</p></header>\n{banner}\
              <h2>Bibliotheken</h2>\n<div class=\"libs\">\n{cards}{create}\n</div>\n\
              <article>\n<h2>{}</h2>\n{chips}\n<div class=\"steps\">\n{steps}\n</div>\n\
-             <h3 id=\"band\">Band</h3>\n{band}\n<h3 id=\"ki\">KI</h3>\n{ki}\n<h3>Zahlen</h3>\n{figures}\n<h3 id=\"nutzung\">Nutzung</h3>\n{usage}\n<h3>Verwalten</h3>\n{manage}\n</article>\n</main>\n{LOCAL_TIME}{scroll}</body>\n</html>\n",
+             <h3 id=\"band\">Band</h3>\n{band}\n<h3 id=\"ki\">KI</h3>\n{ki}\n<h3>Zahlen</h3>\n{figures}\n<h3 id=\"nutzung\">Nutzung</h3>\n{usage}\n<h3>Verwalten</h3>\n{manage}\n</article>\n</main>\n{LOCAL_TIME}{SHARE}{scroll}</body>\n</html>\n",
             esc(&shown.name)
         )
     }
@@ -1159,10 +1197,15 @@ impl Ui {
                 )
             })
             .collect();
+        let find = if members.len() > 8 {
+            "<input type=\"search\" class=\"find\" placeholder=\"Suchen\" aria-label=\"Musiker suchen\" autocomplete=\"off\">"
+        } else {
+            ""
+        };
         let list = if members.is_empty() {
             "<p class=\"muted\">Jeder Musiker bekommt einen eigenen Zugang: Songs, Sets und Abläufe lesen, der Bühne folgen und eintragen, wann er kann. Ob er auch Sets oder Songs bearbeiten darf, stellst du je Musiker ein.</p>".to_string()
         } else {
-            format!("<ul class=\"rows\">{rows}</ul>")
+            format!("{find}<ul class=\"rows crew\">{rows}</ul>")
         };
         let add = format!(
             "<form class=\"row\" method=\"post\" action=\"./\">{csrf}<input type=\"hidden\" name=\"do\" value=\"member-add\"><input type=\"hidden\" name=\"id\" value=\"{id}\">\
@@ -1174,7 +1217,12 @@ impl Ui {
             choices(30)
         );
         let Some(m) = members.iter().find(|m| m.id == person) else {
-            return format!("{list}\n{add}");
+            let hint = if members.is_empty() {
+                ""
+            } else {
+                "<p class=\"muted\">Einen Namen wählen: dann stehen hier sein QR-Code zum Weitergeben, Rollen und wie lange er dabei ist.</p>"
+            };
+            return format!("<div class=\"band\">\n<div>{list}\n{add}</div>\n<div class=\"pick\">{hint}</div>\n</div>");
         };
         // Über den Tunnel, wenn es einen gibt; sonst nur im Heimnetz.
         let server = match &self.panel.public_url {
@@ -1199,7 +1247,12 @@ impl Ui {
                 format!(
                     "<section>\n  {}\n  {reach}<p>Mit der Kamera scannen, oder in Chordwright unter <b>Einstellungen → Datenquelle → Server hinzufügen</b> „QR-Code scannen“.</p>\n  \
                      <dl>\n    <dt>Adresse</dt><dd class=\"value\">{}</dd>\n    <dt>Token</dt><dd class=\"value\">{}</dd>\n  </dl>\n</section>\n",
-                    qr_svg(&link, &format!("QR-Code: Chordwright für {} verbinden", m.name)),
+                    qr_share(
+                        &link,
+                        &format!("QR-Code: Chordwright für {} verbinden", m.name),
+                        &format!("Chordwright für {}", m.name),
+                        &format!("Chordwright - {}.png", file_name(&m.name))
+                    ),
                     esc(server),
                     esc(&m.token)
                 )
@@ -1230,7 +1283,7 @@ impl Ui {
             ai_input,
             choices(if m.until.is_none() { 0 } else { 30 })
         );
-        format!("{list}\n{add}\n<div class=\"steps\">\n{code}{manage}\n</div>")
+        format!("<div class=\"band\">\n<div>{list}\n{add}</div>\n<div class=\"pick\">\n{code}{manage}\n</div>\n</div>")
     }
 
     /// Die KI im Ablaufplaner: der Schlüssel, wie oft am Tag, wer wie viel
@@ -1472,6 +1525,17 @@ const HEAD: &str = r#"<!doctype html>
   .roles input { margin: 0; flex: none; min-height: 0; padding: 0; }
   .letter { display: inline-grid; place-items: center; width: 22px; height: 22px; border: 1px solid var(--line); border-radius: 6px; font-size: 12px; font-weight: 600; }
   .who { font-weight: 600; }
+  .band { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 24px; align-items: start; }
+  .band .row > input { flex-basis: 140px; }
+  .crew { max-height: min(60vh, 520px); overflow-y: auto; margin: 0 0 12px; position: relative; overscroll-behavior: contain; }
+  .crew li { padding-right: 4px; }
+  .crew li:has([aria-current]) { background: color-mix(in srgb, var(--accent) 12%, transparent); border-radius: 6px; padding-left: 6px; }
+  .find { width: 100%; margin: 0 0 8px; }
+  .pick { position: sticky; top: 16px; min-width: 0; }
+  .pick section + section { margin-top: 20px; }
+  .tools { display: flex; flex-wrap: wrap; gap: 6px; margin: 10px 0 0; }
+  .tools button { padding: 6px 12px; font-size: 13px; min-height: 32px; }
+  @media (max-width: 640px) { .band { grid-template-columns: 1fr; } .crew { max-height: 45vh; } .pick { position: static; } }
   .who[aria-current] { text-decoration: underline; }
   input, select { font: inherit; padding: 8px 12px; min-height: 36px; border: 1px solid var(--line); border-radius: 8px; background: var(--bg); color: var(--fg); }
   button { font: inherit; padding: 8px 16px; min-height: 36px; border: 1px solid var(--accent); border-radius: 999px; background: var(--accent); color: var(--bg); cursor: pointer; }
@@ -1519,6 +1583,38 @@ const HEAD: &str = r#"<!doctype html>
 /// Zeitpunkte in der Zeitzone des Geräts, das die Seite ansieht; ohne
 /// Skript bleibt „vor 5 Min.“ stehen.
 const LOCAL_TIME: &str = "<script>for(const t of document.querySelectorAll('time[data-t]')){const d=new Date(+t.dataset.t);t.title=t.textContent;t.dateTime=d.toISOString();t.textContent=t.dataset.only==='time'?d.toLocaleTimeString('de-DE',{hour:'2-digit',minute:'2-digit'}):d.toLocaleString('de-DE',{weekday:'short',day:'numeric',month:'numeric',hour:'2-digit',minute:'2-digit'})}</script>\n";
+
+/// Zum Weitergeben der QR-Codes (`qr_share`): jeder wird ein PNG mit dem
+/// Namen darunter, das sich auch per Rechtsklick oder langem Tippen kopieren
+/// lässt; dazu die Knöpfe. Und die Suche in der Band, und der gewählte
+/// Musiker bleibt in der Liste im Bild.
+const SHARE: &str = r#"<script>(()=>{
+const flash=(b,t)=>{b.dataset.label??=b.textContent;b.textContent=t;clearTimeout(b.t);b.t=setTimeout(()=>b.textContent=b.dataset.label,1800)};
+const draw=(svg,text)=>new Promise(done=>{const n=svg.viewBox.baseVal.width,s=12,cap=text?48:0,c=document.createElement('canvas');c.width=n*s;c.height=n*s+cap;const g=c.getContext('2d');g.fillStyle='#fff';g.fillRect(0,0,c.width,c.height);g.fillStyle='#000';for(const m of svg.querySelector('path').getAttribute('d').matchAll(/M(\d+) (\d+)/g))g.fillRect(m[1]*s,m[2]*s,s,s);if(text){let f=26;do g.font=`600 ${f}px system-ui,sans-serif`;while(g.measureText(text).width>c.width-32&&--f>10);g.textAlign='center';g.fillText(text,c.width/2,n*s+18)}c.toBlob(done,'image/png')});
+const copyText=async t=>{try{await navigator.clipboard.writeText(t);return true}catch{const a=document.createElement('textarea');a.value=t;a.style.position='fixed';a.style.opacity='0';document.body.append(a);a.select();const ok=document.execCommand('copy');a.remove();return ok}};
+for(const box of document.querySelectorAll('.share')){
+  const svg=box.querySelector('svg.qr');if(!svg)continue;
+  const {link,caption,file}=box.dataset,png=draw(svg,caption);
+  png.then(b=>{if(!b)return;const img=new Image();img.className='qr';img.alt=svg.getAttribute('aria-label');img.src=URL.createObjectURL(b);svg.replaceWith(img)});
+  const save=b=>{const a=document.createElement('a');a.download=file;a.href=URL.createObjectURL(b);document.body.append(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(a.href),1e4)};
+  const tools=box.querySelector('.tools'),btn=d=>tools.querySelector(`[data-do=${d}]`);
+  if(!(window.ClipboardItem&&navigator.clipboard?.write))btn('image').hidden=true;
+  png.then(b=>{if(b&&navigator.canShare?.({files:[new File([b],file,{type:'image/png'})]}))btn('share').hidden=false});
+  tools.hidden=false;
+  tools.addEventListener('click',async e=>{const b=e.target.closest('button');if(!b)return;
+    try{switch(b.dataset.do){
+      case'image':await navigator.clipboard.write([new ClipboardItem({'image/png':png})]);flash(b,'Kopiert ✓');break;
+      case'link':flash(b,await copyText(link)?'Kopiert ✓':'Ging nicht');break;
+      case'save':save(await png);break;
+      case'share':await navigator.share({files:[new File([await png],file,{type:'image/png'})],title:caption,text:link});break}}
+    catch(err){if(err?.name==='AbortError')return;if(b.dataset.do==='image'){save(await png);flash(b,'Gespeichert')}else flash(b,'Ging nicht')}})}
+const find=document.querySelector('.find'),crew=document.querySelector('.crew');
+if(find&&crew)find.addEventListener('input',()=>{const q=find.value.trim().toLowerCase();for(const li of crew.children)li.hidden=!!q&&!li.textContent.toLowerCase().includes(q)});
+const cur=crew?.querySelector('[aria-current]')?.closest('li');if(cur)crew.scrollTop=cur.offsetTop-crew.clientHeight/2;
+// Am Handy steht der Gewählte unter der Liste: nach dem Sprung zur Band gleich zu ihm.
+const pick=document.querySelector('.pick section');if(pick&&matchMedia('(max-width: 640px)').matches)addEventListener('load',()=>setTimeout(()=>scrollTo(0,pick.getBoundingClientRect().top+scrollY-16)));
+})()</script>
+"#;
 
 /// Nur Home Assistants Ingress-Proxy (und der eigene Rechner, für die Tests).
 fn allowed(ip: IpAddr) -> bool {
@@ -1725,6 +1821,80 @@ mod tests {
         assert!(page.contains("Diesen Monat noch keine Fragen"));
         ui.act(&form("ai-remove")).unwrap();
         assert!(registry.assistant("").is_none());
+        drop(server);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn the_band_side_by_side() {
+        use chordwright_server::{Options, Server};
+        let root = std::env::temp_dir().join(format!("cw-panel-band-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let (data, share) = (root.join("data"), root.join("share"));
+        std::fs::create_dir_all(&data).unwrap();
+        let server = Server::start(Options {
+            dir: share.join("chordwright"),
+            token: "owner".into(),
+            port: 0,
+            ..Options::default()
+        })
+        .unwrap();
+        let registry = Arc::new(Registry::open(
+            &data,
+            &share,
+            "chordwright",
+            0.0,
+            3,
+            server.hub(),
+        ));
+        let ui = Ui {
+            panel: Panel {
+                addresses: vec!["192.168.1.5".into()],
+                scheme: "https".into(),
+                port: "4174".into(),
+                token: "owner".into(),
+                own_ca: false,
+                folder: "chordwright".into(),
+                samba: false,
+                public_url: None,
+            },
+            registry: registry.clone(),
+            hub: server.hub(),
+            secret: "s".into(),
+        };
+        let mut picked = String::new();
+        for i in 0..12 {
+            let m = registry
+                .add_member(
+                    "",
+                    &format!("Musiker/{i}"),
+                    &["P".into()],
+                    Can::Read,
+                    0,
+                    now_ms(),
+                )
+                .unwrap();
+            if i == 7 {
+                picked = m.id;
+            }
+        }
+        let page = ui.page("", "", 0, None, None, "band", 30);
+        assert!(page.contains("class=\"band\"") && page.contains("class=\"find\""));
+        assert!(page.contains("Einen Namen wählen"));
+        assert!(
+            !page.contains("data-do=\"image\""),
+            "the library's own code is not for passing on"
+        );
+        let page = ui.page("", &picked, 0, None, None, "band", 30);
+        if let Ok(out) = std::env::var("CW_PANEL_DUMP") {
+            std::fs::write(out, &page).unwrap();
+        }
+        assert!(
+            page.contains("data-do=\"image\"")
+                && page.contains("data-file=\"Chordwright - Musiker_7.png\"")
+        );
+        assert!(page.contains("data-caption=\"Chordwright für Musiker/7\""));
+        assert_eq!(file_name("Sönke (Aushilfe)"), "Soenke (Aushilfe)");
         drop(server);
         let _ = std::fs::remove_dir_all(&root);
     }
