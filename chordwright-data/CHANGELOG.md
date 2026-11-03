@@ -1,5 +1,9 @@
 # Changelog
 
+## 2.5.1
+
+- Web-UI, Abschnitt **Band**: Die Musiker stehen jetzt nach ihren Rechten sortiert — wer Songs und Sets bearbeiten darf oben, dann wer Sets bearbeiten darf, dann wer nur liest — und innerhalb davon alphabetisch nach Namen.
+
 ## 2.5.0
 
 - Nutzung: In der Web-UI bekommt jede Bibliothek einen Abschnitt **Nutzung** — wer wann auf die Bibliothek zugegriffen hat, für die letzten 24 Stunden, 7 oder 30 Tage. Zahlen zu Anfragen, Personen, Rechenzeit und übertragenen Daten, dazu die Last des Add-ons (CPU im Schnitt, Arbeitsspeicher) und des ganzen Rechners. Zwei Ringdiagramme zeigen, wer wie viel angefragt hat und wofür (Lesen, Schreiben, Live-Verbindung, Bühne, KI, Sicherungen, Abgewiesen), Säulen den Verlauf, eine Tabelle jede Person mit ihrem letzten Zugriff, und darunter die einzelnen Besuche mit Uhrzeit.
