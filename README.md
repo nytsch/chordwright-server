@@ -57,7 +57,7 @@ writes that folder.
 - **The Home Assistant add-on**: the same program, `--addon`
   (`src/addon.rs`), with a web UI behind *Open Web UI* (`src/panel.rs`): every
   library with its songs, sets, connected devices, last changes, backups,
-  open stages and who used it when (`src/usage.rs`); a QR code to connect a device; and more libraries, added,
+  open stages, proposals to accept and who used it when (`src/usage.rs`); a QR code to connect a device; and more libraries, added,
   renamed, given a new token or removed there (`src/instances.rs`). Its image fetches the static Linux file of the release that
   matches the add-on's version and checks it against `SHA256SUMS`; nothing is
   compiled on the Home Assistant machine. So a release comes first (tag →
@@ -275,6 +275,7 @@ under their own name in the change journal. `can` says what else:
 | `can` | may also write |
 |---|---|
 | `read` (default) | nothing |
+| `suggest` | nothing directly — changes to anything as [proposals](#proposals) the owner accepts |
 | `sets` | `user/setlists`, `user/lineups` |
 | `all` | every `user` record, and `library` records — but no `DELETE` there, and no `library/index` that leaves out a song it had (by `chordProId`) |
 
@@ -298,6 +299,48 @@ roles, can }` and `until`, ms since the epoch or null), `expired` or `none`.
 From the command line `--members <file.json>`; from Rust `Options { members, … }`
 or, while it runs, `server.hub().set_members(id, members)`. The Home Assistant
 add-on keeps them per library, edited in its web UI, across restarts.
+
+## Proposals
+
+For someone who wants to work on the library but may not write it: they
+mirror it (`GET /api/:db?revs=1`, values and revisions), change their copy
+wherever they like, and send back what they changed as one proposal. Nothing
+of it reaches `library/` or `user/` until the owner accepts it. Every musician
+whose `can` is more than `read` may propose, so one with `all` can also
+propose what they may not do themselves, removing a song for example.
+
+```
+GET    /api/proposals             → { proposals: [{ id, title, note, by: { id, name }, createdAt, status, decidedAt, decidedBy, open, changes: [{ db, key, base, remove, state }] }] }
+POST   /api/proposals             ← { title?, note?, changes: [{ db, key, base, value }] }  → 201 the proposal | 400 | 403 | 429
+GET    /api/proposals/:id         → the proposal, each change with `value`, `label`, `current` (its revision now) and `stale`
+POST   /api/proposals/:id/accept  ← { keys?: ["db/key", …], force? }  → { proposal, applied: ["db/key"], conflicts: [{ db, key, base, value, rev }] }
+DELETE /api/proposals/:id                                            → 204   (open: rejected, or withdrawn by its author; decided: gone)
+```
+
+- **`base`** is the revision the change was made on, null for a record that
+  was not there; **`value`** is what a `PUT` would send, null to remove it.
+  Changes that would leave a record as it is are left out, and a proposal that
+  changes nothing is refused (`400 nothing changed`). Another musician's
+  `availability.*` is not proposable.
+- **Accepting** writes each open change as a conditional write on its `base`
+  (`If-Match`), in the author's name in the change journal. A record that
+  moved since is a **conflict**: it stays open and comes back with what is
+  there now, for the owner's app to merge, to take anyway (`force: true`), or
+  to leave by rejecting the rest. Once nothing is open the proposal is
+  `accepted`. `keys` accepts just those changes.
+- **Who sees what:** the owner every proposal, a musician their own. Only the
+  owner accepts or rejects. `status` is `open`, `accepted`, `rejected` or
+  `withdrawn`; the newest 50 decided ones stay.
+- **Kept in `.chordwright/proposals/<id>.json`**, outside the library: the
+  watcher does not see them and no backup carries them. At most 20 open per
+  author and 1000 changes in one.
+- **On `/api/events`** as a named event, `event: proposal` with `{ id, status }`
+  (`status` null: it was deleted). `/api/health` says `proposals: true`.
+- **From Rust:** `hub.proposals(id)`, `hub.proposal(id, pid)` (each change
+  with `before`/`after` as a person reads them and `stale`),
+  `hub.accept_proposal(…)`, `hub.reject_proposal(…)`; `Stats::proposals`
+  counts the open ones. The Home Assistant add-on's web UI lists them under
+  *Vorschläge*, with a line diff per change, to accept or reject.
 
 ## Backups
 
