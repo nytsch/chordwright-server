@@ -1,5 +1,11 @@
 # Changelog
 
+## 2.6.0
+
+- Änderungen vorschlagen: Ein Musiker kann neu **Änderungen vorschlagen** dürfen (in der Web-UI unter **Band** einstellbar). Er liest wie bisher alles, schreibt aber nichts direkt. Was er in seiner Kopie der Bibliothek ändert, schickt er als Vorschlag zurück, und erst wenn du ihn annimmst, steht es in der Bibliothek. Jeder Musiker, der mehr als nur lesen darf, kann so auch vorschlagen, was er selbst nicht darf, zum Beispiel einen Song löschen.
+- Beim Annehmen wird jede Änderung auf den Stand geschrieben, auf dem sie gemacht wurde. Hat sich ein Song inzwischen geändert, bleibt er im Vorschlag offen und kommt mit dem jetzigen Stand zurück, zum Zusammenführen oder trotzdem Übernehmen. Im Protokoll steht die Änderung unter dem Namen dessen, der sie vorgeschlagen hat.
+- Für die App: `GET`/`POST /api/proposals`, `GET`/`DELETE /api/proposals/:id`, `POST /api/proposals/:id/accept`; `/api/health` sagt `proposals: true`. Die Vorschläge liegen in `.chordwright/proposals/` und gehen in keine Sicherung. Die Liste mit Annehmen und Ablehnen in der Web-UI folgt.
+
 ## 2.5.2
 
 - Web-UI, **Band**: Die Liste der Musiker und der gewählte Musiker stehen nebeneinander, am Handy untereinander. Eine lange Liste scrollt für sich, ab neun Musikern mit einem Suchfeld; der gewählte bleibt darin im Bild, und sein QR-Code steht beim Durchklicken immer an derselben Stelle.

@@ -40,6 +40,7 @@ pub use site::{Files, Site};
 mod http;
 mod journal;
 mod pairing;
+mod proposals;
 mod site;
 mod stage;
 mod store;
@@ -157,6 +158,9 @@ pub enum Can {
     /// Nothing else.
     #[default]
     Read,
+    /// Nothing directly, but changes to anything as a proposal the owner
+    /// accepts or rejects (proposals.rs).
+    Suggest,
     /// The sets and who plays in them (`user/setlists`, `user/lineups`).
     Sets,
     /// Also songs, their arrangements, and the rest of the user database.
@@ -164,15 +168,21 @@ pub enum Can {
 }
 
 impl Can {
-    pub const ALL: [Can; 3] = [Can::Read, Can::Sets, Can::All];
+    pub const ALL: [Can; 4] = [Can::Read, Can::Suggest, Can::Sets, Can::All];
 
     pub fn is_read(&self) -> bool {
         *self == Can::Read
     }
 
-    /// As a form sends it (`read`, `sets`, `all`); anything else reads only.
+    /// Whether they may send proposals: everyone who may do more than read.
+    pub fn may_propose(&self) -> bool {
+        *self != Can::Read
+    }
+
+    /// As a form sends it (`read`, `suggest`, `sets`, `all`); anything else reads only.
     pub fn parse(text: &str) -> Can {
         match text {
+            "suggest" => Can::Suggest,
             "sets" => Can::Sets,
             "all" => Can::All,
             _ => Can::Read,
@@ -182,6 +192,7 @@ impl Can {
     pub fn id(&self) -> &'static str {
         match self {
             Can::Read => "read",
+            Can::Suggest => "suggest",
             Can::Sets => "sets",
             Can::All => "all",
         }
@@ -191,6 +202,7 @@ impl Can {
     pub fn label(&self) -> &'static str {
         match self {
             Can::Read => "Nur lesen",
+            Can::Suggest => "Änderungen vorschlagen",
             Can::Sets => "Sets bearbeiten",
             Can::All => "Songs und Sets bearbeiten",
         }
@@ -237,7 +249,7 @@ impl Member {
             return true;
         }
         match (self.can, db) {
-            (Can::Read, _) => false,
+            (Can::Read | Can::Suggest, _) => false,
             (_, "user") if key.starts_with("availability.") => false,
             (Can::Sets, "user") => key == "setlists" || key == "lineups",
             (Can::All, "user") => true,
@@ -892,6 +904,7 @@ fn library_state(
         store,
         backups: Backups::new(&root, backup_keep),
         journal: Journal::open(&root),
+        proposals: proposals::Proposals::new(&root),
         usage: Usage::open(&root),
         members: RwLock::new(Vec::new()),
         desk: Arc::new(assistant::Desk::open(&root)),

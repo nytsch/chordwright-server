@@ -42,6 +42,7 @@ Deine Musiker sollen Songs, Sets und Abläufe sehen, der Bühne folgen und eintr
 - **Bühne:** folgen und auch leiten.
 - **Schreiben:** die eigenen Antworten, wann er kann (`share/chordwright/user/availability.<name>.json`), und zwar unter seinem Namen. Dazu, je nachdem, was du bei ihm einstellst:
   - **Nur lesen** (Voreinstellung): sonst nichts.
+  - **Änderungen vorschlagen:** schreibt nichts direkt, schickt aber Änderungen an Songs und Sets als Vorschlag, den du annimmst oder ablehnst. Vorschlagen kann auch jeder, der Sets oder Songs bearbeiten darf.
   - **Sets bearbeiten:** Sets anlegen, ändern, löschen und die Besetzung einteilen.
   - **Songs und Sets bearbeiten:** außerdem Songs anlegen und ändern, samt Abläufen, Song-Einstellungen und den übrigen Einstellungen der Bibliothek.
 - **Bleibt bei dir:** Songs löschen, Sicherungen ansehen oder wiederherstellen, die Antworten anderer. Der Server weist das ab (`403 read only`), gleich was die App versucht.
