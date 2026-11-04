@@ -28,7 +28,7 @@ use serde_json::{json, Value};
 
 use crate::http::Shared;
 use crate::store::{is_database, is_valid_key, song_text, song_title, Expect, Outcome};
-use crate::util::{hex, iso, now_ms, pretty, write_atomic};
+use crate::util::{hex, iso, now_ms, parse_iso, pretty, write_atomic};
 
 const DIR: &str = ".chordwright/proposals";
 /// Records in one proposal: a whole library of a band is a few hundred.
@@ -101,6 +101,18 @@ pub struct Proposal {
     #[serde(default)]
     pub decided_by: Option<String>,
     pub changes: Vec<Change>,
+}
+
+impl Proposal {
+    /// When it was sent, ms since the epoch.
+    pub fn created_ms(&self) -> i64 {
+        parse_iso(&self.created_at).unwrap_or(0)
+    }
+
+    /// When it was decided, ms since the epoch.
+    pub fn decided_ms(&self) -> Option<i64> {
+        self.decided_at.as_deref().and_then(parse_iso)
+    }
 }
 
 /// `p<yyyymmdd>-<hhmmss>-<4 hex>`: sorts by time, one path segment.
@@ -235,7 +247,7 @@ pub fn summary(p: &Proposal) -> Value {
 
 /// What a change is, for a person: a song by the title it gets, else as
 /// the store names the record.
-fn label(s: &Shared, c: &Change) -> String {
+pub(crate) fn label(s: &Shared, c: &Change) -> String {
     let proposed = (c.db == "library" && c.key.starts_with("doc."))
         .then(|| c.value.as_deref().and_then(song_text))
         .flatten()
@@ -365,6 +377,7 @@ pub fn create(
     s.proposals
         .save(&p)
         .map_err(|e| refused(500, e.to_string()))?;
+    s.listeners.send(event_line(&p.id, Some(p.status)));
     Ok(p)
 }
 
@@ -461,6 +474,7 @@ pub fn accept(
     if p.status != Status::Open {
         s.proposals.prune();
     }
+    s.listeners.send(event_line(&p.id, Some(p.status)));
     Ok(Accepted {
         proposal: p,
         applied,
@@ -482,6 +496,7 @@ pub fn close(
     };
     if p.status != Status::Open {
         std::fs::remove_file(s.proposals.path(id)).map_err(|e| refused(500, e.to_string()))?;
+        s.listeners.send(event_line(id, None));
         return Ok(None);
     }
     p.status = status;
@@ -491,7 +506,22 @@ pub fn close(
         .save(&p)
         .map_err(|e| refused(500, e.to_string()))?;
     s.proposals.prune();
+    s.listeners.send(event_line(&p.id, Some(p.status)));
     Ok(Some(p))
+}
+
+/// A record's value as a person reads it: a song's ChordPro text, anything
+/// else as pretty-printed JSON (or as it is, when it is not JSON).
+pub(crate) fn readable(db: &str, key: &str, value: &str) -> String {
+    if db == "library" && key.starts_with("doc.") {
+        if let Some(text) = song_text(value) {
+            return text;
+        }
+    }
+    match serde_json::from_str::<Value>(value) {
+        Ok(v) => pretty(&v),
+        Err(_) => value.to_string(),
+    }
 }
 
 /// A named event, like the stage's: apps that only listen with `onmessage`

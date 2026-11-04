@@ -51,6 +51,16 @@ Tipp auf einen Namen zeigt daneben seinen QR-Code; mit eigener CA und ohne Tunne
 
 Ohne Tunnel zeigt der QR-Code die Adresse im Heimnetz. Für unterwegs: [Von unterwegs](#von-unterwegs-tunnel-mit-cloudflared).
 
+### Vorschläge annehmen
+
+Wer **Änderungen vorschlagen** (oder mehr) darf, kann in seiner Kopie der Bibliothek arbeiten und die Änderungen als Vorschlag schicken. In der Web-UI stehen sie unter **Vorschläge**, die Karte der Bibliothek zeigt, wie viele warten.
+
+- **Jede Änderung mit Vergleich:** Zeilen, die wegfallen, rot mit `-`, neue grün mit `+`. Gleiche Zeilen weiter weg werden zusammengefaltet. Ein neuer Song steht mit seinem Titel da, ein gelöschter als **löschen**.
+- **Ausgewählte übernehmen** schreibt die angehakten Änderungen in die Bibliothek, im Protokoll unter dem Namen dessen, der sie vorgeschlagen hat. Alle verbundenen Apps sehen sie gleich.
+- **Seitdem geändert** heißt: Den Song hat inzwischen jemand anders geändert. Der Vergleich zeigt dann den jetzigen Stand gegen den Vorschlag. Beim normalen Übernehmen bleibt so eine Änderung offen, damit nichts verloren geht. **Trotzdem übernehmen** überschreibt den jetzigen Stand mit dem Vorschlag.
+- **Ablehnen** schließt den Vorschlag. Was davon noch offen war, kommt nicht in die Bibliothek; was du schon übernommen hast, bleibt.
+- Darunter stehen die zuletzt entschiedenen. Die Vorschläge liegen in `share/chordwright/.chordwright/proposals/` und gehen in keine Sicherung.
+
 ### KI im Ablaufplaner
 
 Der Ablaufplaner der App kann Claude nach der Form der Originalaufnahme fragen. Damit das über deinen Server läuft und nicht jeder einen eigenen Schlüssel braucht, trägst du in der Web-UI unter **KI** einen Anthropic-Schlüssel ein (`sk-ant-…`, aus der [Anthropic Console](https://console.anthropic.com)). Am besten nimmst du einen eigenen Schlüssel je Bibliothek, aus einem eigenen Workspace mit Ausgabenlimit. Dann hat auch ein verlorener Schlüssel eine Obergrenze.

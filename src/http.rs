@@ -962,11 +962,7 @@ async fn proposals_route(
             let own = member.as_ref().map(Member::answers_key);
             let by = me.clone();
             match blocking(s, move |s| proposals::create(s, by, own, &body)).await {
-                Ok(p) => {
-                    s.listeners
-                        .send(proposals::event_line(&p.id, Some(p.status)));
-                    send(201, proposals::summary(&p))
-                }
+                Ok(p) => send(201, proposals::summary(&p)),
                 Err(r) => refused(r),
             }
         }
@@ -996,13 +992,7 @@ async fn proposals_route(
                     match blocking(s, move |s| proposals::close(s, &id, status, by.as_deref()))
                         .await
                     {
-                        Ok(closed) => {
-                            s.listeners.send(proposals::event_line(
-                                &p.id,
-                                closed.as_ref().map(|c| c.status),
-                            ));
-                            respond(204, None, &[])
-                        }
+                        Ok(_) => respond(204, None, &[]),
                         Err(r) => refused(r),
                     }
                 }
@@ -1037,20 +1027,14 @@ async fn proposals_route(
                     })
                     .await;
                     match result {
-                        Ok(done) => {
-                            s.listeners.send(proposals::event_line(
-                                &done.proposal.id,
-                                Some(done.proposal.status),
-                            ));
-                            send(
-                                200,
-                                json!({
-                                    "proposal": proposals::summary(&done.proposal),
-                                    "applied": done.applied,
-                                    "conflicts": done.conflicts,
-                                }),
-                            )
-                        }
+                        Ok(done) => send(
+                            200,
+                            json!({
+                                "proposal": proposals::summary(&done.proposal),
+                                "applied": done.applied,
+                                "conflicts": done.conflicts,
+                            }),
+                        ),
                         Err(r) => refused(r),
                     }
                 }

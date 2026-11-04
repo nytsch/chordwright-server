@@ -4,7 +4,8 @@
 
 - Änderungen vorschlagen: Ein Musiker kann neu **Änderungen vorschlagen** dürfen (in der Web-UI unter **Band** einstellbar). Er liest wie bisher alles, schreibt aber nichts direkt. Was er in seiner Kopie der Bibliothek ändert, schickt er als Vorschlag zurück, und erst wenn du ihn annimmst, steht es in der Bibliothek. Jeder Musiker, der mehr als nur lesen darf, kann so auch vorschlagen, was er selbst nicht darf, zum Beispiel einen Song löschen.
 - Beim Annehmen wird jede Änderung auf den Stand geschrieben, auf dem sie gemacht wurde. Hat sich ein Song inzwischen geändert, bleibt er im Vorschlag offen und kommt mit dem jetzigen Stand zurück, zum Zusammenführen oder trotzdem Übernehmen. Im Protokoll steht die Änderung unter dem Namen dessen, der sie vorgeschlagen hat.
-- Für die App: `GET`/`POST /api/proposals`, `GET`/`DELETE /api/proposals/:id`, `POST /api/proposals/:id/accept`; `/api/health` sagt `proposals: true`. Die Vorschläge liegen in `.chordwright/proposals/` und gehen in keine Sicherung. Die Liste mit Annehmen und Ablehnen in der Web-UI folgt.
+- Für die App: `GET`/`POST /api/proposals`, `GET`/`DELETE /api/proposals/:id`, `POST /api/proposals/:id/accept`; `/api/health` sagt `proposals: true`. Die Vorschläge liegen in `.chordwright/proposals/` und gehen in keine Sicherung.
+- Web-UI, neuer Abschnitt **Vorschläge**: jeder offene Vorschlag mit Absender, Notiz und für jede Änderung einem Zeilenvergleich (rot was wegfällt, grün was dazukommt). **Ausgewählte übernehmen** schreibt die angehakten Änderungen, **Trotzdem übernehmen** auch die, die sich seitdem geändert haben, **Ablehnen** schließt ihn. Darunter die zuletzt entschiedenen. Die Karte der Bibliothek zeigt, wie viele Vorschläge warten.
 
 ## 2.5.2
 

@@ -57,7 +57,7 @@ writes that folder.
 - **The Home Assistant add-on**: the same program, `--addon`
   (`src/addon.rs`), with a web UI behind *Open Web UI* (`src/panel.rs`): every
   library with its songs, sets, connected devices, last changes, backups,
-  open stages and who used it when (`src/usage.rs`); a QR code to connect a device; and more libraries, added,
+  open stages, proposals to accept and who used it when (`src/usage.rs`); a QR code to connect a device; and more libraries, added,
   renamed, given a new token or removed there (`src/instances.rs`). Its image fetches the static Linux file of the release that
   matches the add-on's version and checks it against `SHA256SUMS`; nothing is
   compiled on the Home Assistant machine. So a release comes first (tag →
@@ -336,6 +336,11 @@ DELETE /api/proposals/:id                                            → 204   (
   author and 1000 changes in one.
 - **On `/api/events`** as a named event, `event: proposal` with `{ id, status }`
   (`status` null: it was deleted). `/api/health` says `proposals: true`.
+- **From Rust:** `hub.proposals(id)`, `hub.proposal(id, pid)` (each change
+  with `before`/`after` as a person reads them and `stale`),
+  `hub.accept_proposal(…)`, `hub.reject_proposal(…)`; `Stats::proposals`
+  counts the open ones. The Home Assistant add-on's web UI lists them under
+  *Vorschläge*, with a line diff per change, to accept or reject.
 
 ## Backups
 
