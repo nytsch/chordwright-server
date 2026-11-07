@@ -79,3 +79,50 @@ async fn start_stop_restart_inside_a_runtime() {
     drop(plain);
     std::fs::remove_dir_all(dir).unwrap();
 }
+
+/// What `/api/changes` says about a write: what changed in it, and nothing for
+/// a write that left the record as it was.
+#[tokio::test(flavor = "multi_thread")]
+async fn changes_say_what_changed() {
+    let dir = std::env::temp_dir().join(format!("cw-detail-{}", std::process::id()));
+    let server = Server::start(Options {
+        dir: dir.clone(),
+        token: "t".into(),
+        port: 0,
+        ..Options::default()
+    })
+    .unwrap();
+    let port = server.ready().port;
+    let put = |key: &str, body: &str| {
+        let answer = request(port, "PUT", &format!("/api/user/record/{key}"), body);
+        assert!(answer.starts_with("HTTP/1.1 204"), "{answer}");
+    };
+    put("tags", r#"{"v":1,"data":["Anbetung"]}"#);
+    let changes = request(port, "GET", "/api/changes", "");
+    assert!(
+        changes.contains(r#""detail":[{"kind":"created"}]"#),
+        "{changes}"
+    );
+
+    // Again with the same tags, as an app does after every song it saves.
+    put("tags", r#"{"v":1,"data":["Anbetung"]}"#);
+    put(
+        "setlists",
+        r#"{"v":1,"data":[{"id":"s","name":"Sonntag","entries":[]}]}"#,
+    );
+    put(
+        "setlists",
+        r#"{"v":1,"data":[{"id":"s","name":"Sonntag","entries":[{"songId":"lord"}]}]}"#,
+    );
+    let changes = request(port, "GET", "/api/changes", "");
+    assert_eq!(changes.matches(r#""key":"tags""#).count(), 1, "{changes}");
+    // Two writes to the sets in a row: one entry, described from the start.
+    assert_eq!(
+        changes.matches(r#""key":"setlists""#).count(),
+        1,
+        "{changes}"
+    );
+    assert!(changes.contains(r#"{"kind":"created"}"#), "{changes}");
+    drop(server);
+    std::fs::remove_dir_all(dir).unwrap();
+}

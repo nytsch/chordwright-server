@@ -209,7 +209,7 @@ GET    /api/backups               → { backups: [{ id, createdAt, reason, songs
 POST   /api/backups               → a snapshot now                   → 201 { id, … }
 POST   /api/backups/:id/restore   → { restored, safety }
 DELETE /api/backups/:id                                              → 204 | 404
-GET    /api/changes?limit=50      → { changes: [{ db, key, at, by, action }] }   newest first
+GET    /api/changes?limit=50      → { changes: [{ db, key, at, by, action, detail? }] }   newest first; `detail` says what a write changed (`src/describe.rs`), a write that changed nothing is not listed
 GET    /api/changes?db=&key=      → { change: { at, by, action } | null }
 GET    /api/time                  → { now }   the server's clock in ms
 GET    /api/stage                 → { now, rooms: [{ room, leader: { name } | null, followers: n, rev, touched }] }

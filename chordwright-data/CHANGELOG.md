@@ -1,5 +1,10 @@
 # Changelog
 
+## 2.6.0
+
+- **Letzte Änderungen** sagen jetzt, was sich geändert hat: bei Tags welcher dazukam, wegfiel oder umbenannt wurde, bei Sets welches Set und welcher Song darin, bei Songs die geänderten Angaben (z. B. Tonart G → A) und wie viele Zeilen Text. Die App zeigt das rechts neben dem Eintrag. Mehrere Speichervorgänge kurz hintereinander werden zusammen beschrieben.
+- Ein Speichervorgang, der nichts ändert, steht nicht mehr in der Liste. Bisher schrieb die App die Tag-Liste bei jeder Song-Änderung neu, und jeder davon erschien als „Tags geändert“.
+
 ## 2.5.2
 
 - Web-UI, **Band**: Die Liste der Musiker und der gewählte Musiker stehen nebeneinander, am Handy untereinander. Eine lange Liste scrollt für sich, ab neun Musikern mit einem Suchfeld; der gewählte bleibt darin im Bild, und sein QR-Code steht beim Durchklicken immer an derselben Stelle.
