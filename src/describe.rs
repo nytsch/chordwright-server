@@ -41,16 +41,25 @@ pub fn change(
     let Some(after) = after else {
         return Vec::new();
     };
-    let Some(before) = before else {
-        return vec![json!({ "kind": "created" })];
-    };
-    if before == after {
-        return Vec::new();
-    }
     let mut diff = Diff {
         titles,
         parts: Vec::new(),
     };
+    let Some(before) = before else {
+        // New: say so, and for a record what it starts out with — the first
+        // set, the tags of the first song — as if it had been there empty.
+        diff.parts.push(json!({ "kind": "created" }));
+        if !(db == "library" && key.starts_with("doc.")) {
+            if let Ok(a) = serde_json::from_str::<Value>(after) {
+                let a = payload(&a);
+                diff.value(None, None, &empty_like(a), a);
+            }
+        }
+        return diff.parts;
+    };
+    if before == after {
+        return Vec::new();
+    }
     if db == "library" && key.starts_with("doc.") {
         diff.chordpro(before, after);
     } else if let (Ok(b), Ok(a)) = (
@@ -69,6 +78,15 @@ fn payload(value: &Value) -> &Value {
             &m["data"]
         }
         _ => value,
+    }
+}
+
+/// Nothing, in the shape of `value`.
+fn empty_like(value: &Value) -> Value {
+    match value {
+        Value::Array(_) => json!([]),
+        Value::Object(_) => json!({}),
+        _ => Value::Null,
     }
 }
 
@@ -118,6 +136,9 @@ impl Diff<'_> {
         }
         match (b, a) {
             (Value::Array(b), Value::Array(a)) => self.list(scope, name, b, a),
+            // A list that was not there, or is no more, is an empty one.
+            (Value::Null, Value::Array(a)) => self.list(scope, name, &[], a),
+            (Value::Array(b), Value::Null) => self.list(scope, name, b, &[]),
             // Only a record's own top level is opened; deeper objects are named.
             (Value::Object(b), Value::Object(a)) if name.is_none() => self.object(scope, b, a),
             _ => self.field(scope, name, b, a),
@@ -381,6 +402,48 @@ mod tests {
         assert!(change("user", "tags", Some("[]"), None, &titles).is_empty());
         assert_eq!(
             change("user", "tags", None, Some("[]"), &titles),
+            [json!({ "kind": "created" })]
+        );
+    }
+
+    #[test]
+    fn new_records_say_what_they_start_with() {
+        let created = |key: &str, a: &str| change("user", key, None, Some(a), &titles);
+        assert_eq!(
+            created("tags", r#"{"v":1,"data":["Anbetung"]}"#),
+            [
+                json!({ "kind": "created" }),
+                json!({ "kind": "added", "text": "Anbetung" })
+            ]
+        );
+        assert_eq!(
+            created(
+                "setlists",
+                r#"{"v":1,"data":[{"id":"s","name":"Sonntag","entries":[{"songId":"lord"}]}]}"#
+            ),
+            [
+                json!({ "kind": "created" }),
+                json!({ "kind": "added", "text": "Sonntag" })
+            ]
+        );
+        assert_eq!(
+            created(
+                "songSettings",
+                r#"{"v":1,"data":{"lord":{"tags":["Anbetung"]}}}"#
+            ),
+            [
+                json!({ "kind": "created" }),
+                json!({ "kind": "added", "text": "Anbetung", "name": "tags", "in": "Lord I Need You" }),
+            ]
+        );
+        assert_eq!(
+            change(
+                "library",
+                "doc.lord",
+                None,
+                Some("{title: Lord}\nText"),
+                &titles
+            ),
             [json!({ "kind": "created" })]
         );
     }

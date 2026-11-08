@@ -100,7 +100,7 @@ async fn changes_say_what_changed() {
     put("tags", r#"{"v":1,"data":["Anbetung"]}"#);
     let changes = request(port, "GET", "/api/changes", "");
     assert!(
-        changes.contains(r#""detail":[{"kind":"created"}]"#),
+        changes.contains(r#""detail":[{"kind":"created"},{"kind":"added","text":"Anbetung"}]"#),
         "{changes}"
     );
 

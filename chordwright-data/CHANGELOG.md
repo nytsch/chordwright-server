@@ -1,5 +1,9 @@
 # Changelog
 
+## 2.6.1
+
+- **Letzte Änderungen**: Ein neu angelegter Eintrag sagt jetzt auch, womit er beginnt — das erste Set mit Namen, die ersten Tags, die Tags eines Songs in den Song-Einstellungen — statt nur „neu“.
+
 ## 2.6.0
 
 - **Letzte Änderungen** sagen jetzt, was sich geändert hat: bei Tags welcher dazukam, wegfiel oder umbenannt wurde, bei Sets welches Set und welcher Song darin, bei Songs die geänderten Angaben (z. B. Tonart G → A) und wie viele Zeilen Text. Die App zeigt das rechts neben dem Eintrag. Mehrere Speichervorgänge kurz hintereinander werden zusammen beschrieben.
