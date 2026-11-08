@@ -1,0 +1,493 @@
+//! What a change was, in a few words — for the list of recent changes.
+//!
+//! The journal knows that a record was written; this says what moved in it: a
+//! tag added, a song taken out of a set, a song's key. Structured, not prose —
+//! the app says it in the reader's language:
+//!
+//! ```text
+//!   { kind: "created" }                            the record is new
+//!   { kind: "added",   text, name?, in? }          a tag, a set, a song in a set
+//!   { kind: "removed", text, name?, in? }
+//!   { kind: "renamed", from, to, name?, in? }
+//!   { kind: "field",   name?, from?, to?, in? }    a value; from/to only when short
+//!   { kind: "order",   name?, in? }                the same items, another order
+//!   { kind: "lines",   count }                     lines of a song's text
+//! ```
+//!
+//! `in` is what the part happened inside (a set's name, a song's title),
+//! `name` the field it happened in. Nothing about a record's shape is required:
+//! what is not recognised is described as a changed field, or not at all.
+
+use serde_json::{json, Map, Value};
+
+/// A change to a whole library rarely needs more to be recognised.
+const MAX_PARTS: usize = 12;
+/// A value longer than this is named, not quoted.
+const MAX_SHOWN: usize = 40;
+/// Fields that move with every save and say nothing.
+const NOISE: [&str; 3] = ["updatedAt", "createdAt", "modifiedAt"];
+/// Beyond this many cells the line count is an estimate, not a diff.
+const MAX_CELLS: usize = 1_000_000;
+
+/// What changed from `before` to `after` (None: not there). Empty when
+/// nothing did, or nothing that can be said. `titles` names a song by its id.
+pub fn change(
+    db: &str,
+    key: &str,
+    before: Option<&str>,
+    after: Option<&str>,
+    titles: &dyn Fn(&str) -> Option<String>,
+) -> Vec<Value> {
+    let Some(after) = after else {
+        return Vec::new();
+    };
+    let Some(before) = before else {
+        return vec![json!({ "kind": "created" })];
+    };
+    if before == after {
+        return Vec::new();
+    }
+    let mut diff = Diff {
+        titles,
+        parts: Vec::new(),
+    };
+    if db == "library" && key.starts_with("doc.") {
+        diff.chordpro(before, after);
+    } else if let (Ok(b), Ok(a)) = (
+        serde_json::from_str::<Value>(before),
+        serde_json::from_str::<Value>(after),
+    ) {
+        diff.value(None, None, payload(&b), payload(&a));
+    }
+    diff.parts
+}
+
+/// The app's records are `{ v, data }`; older ones are the payload itself.
+fn payload(value: &Value) -> &Value {
+    match value {
+        Value::Object(m) if m.get("v").is_some_and(Value::is_number) && m.contains_key("data") => {
+            &m["data"]
+        }
+        _ => value,
+    }
+}
+
+fn is_short(value: &Value) -> bool {
+    match value {
+        Value::Null | Value::Bool(_) | Value::Number(_) => true,
+        Value::String(s) => s.chars().count() <= MAX_SHOWN,
+        _ => false,
+    }
+}
+
+/// An item of a list with an identity: its id, how to call it, the item.
+type Item<'v> = (String, String, &'v Map<String, Value>);
+
+struct Diff<'a> {
+    titles: &'a dyn Fn(&str) -> Option<String>,
+    parts: Vec<Value>,
+}
+
+impl Diff<'_> {
+    fn push(&mut self, mut part: Map<String, Value>, name: Option<&str>, scope: Option<&str>) {
+        if self.parts.len() >= MAX_PARTS {
+            return;
+        }
+        if let Some(name) = name {
+            part.insert("name".into(), json!(name));
+        }
+        if let Some(scope) = scope {
+            part.insert("in".into(), json!(scope));
+        }
+        let part = Value::Object(part);
+        if !self.parts.contains(&part) {
+            self.parts.push(part);
+        }
+    }
+
+    fn kind(kind: &str) -> Map<String, Value> {
+        let mut part = Map::new();
+        part.insert("kind".into(), json!(kind));
+        part
+    }
+
+    /// `name`: the field the value sits in; `scope`: what it belongs to.
+    fn value(&mut self, scope: Option<&str>, name: Option<&str>, b: &Value, a: &Value) {
+        if b == a {
+            return;
+        }
+        match (b, a) {
+            (Value::Array(b), Value::Array(a)) => self.list(scope, name, b, a),
+            // Only a record's own top level is opened; deeper objects are named.
+            (Value::Object(b), Value::Object(a)) if name.is_none() => self.object(scope, b, a),
+            _ => self.field(scope, name, b, a),
+        }
+    }
+
+    fn field(&mut self, scope: Option<&str>, name: Option<&str>, b: &Value, a: &Value) {
+        let mut part = Self::kind("field");
+        if is_short(b) && is_short(a) {
+            part.insert("from".into(), b.clone());
+            part.insert("to".into(), a.clone());
+        }
+        self.push(part, name, scope);
+    }
+
+    fn object(&mut self, scope: Option<&str>, b: &Map<String, Value>, a: &Map<String, Value>) {
+        let empty = Map::new();
+        let keys = b.keys().chain(a.keys().filter(|k| !b.contains_key(*k)));
+        for key in keys {
+            if NOISE.contains(&key.as_str()) {
+                continue;
+            }
+            let (bv, av) = (
+                b.get(key).unwrap_or(&Value::Null),
+                a.get(key).unwrap_or(&Value::Null),
+            );
+            if bv == av {
+                continue;
+            }
+            // A table keyed by song (the song settings): which song, then what.
+            if scope.is_none() {
+                if let Some(title) = (self.titles)(key) {
+                    let (bo, ao) = (bv.as_object(), av.as_object());
+                    if bo.is_some() || ao.is_some() {
+                        self.object(Some(&title), bo.unwrap_or(&empty), ao.unwrap_or(&empty));
+                        continue;
+                    }
+                }
+            }
+            self.value(scope, Some(key), bv, av);
+        }
+    }
+
+    fn list(&mut self, scope: Option<&str>, name: Option<&str>, b: &[Value], a: &[Value]) {
+        if let (Some(bs), Some(as_)) = (strings(b), strings(a)) {
+            let gone: Vec<&str> = bs.iter().filter(|t| !as_.contains(t)).copied().collect();
+            let new: Vec<&str> = as_.iter().filter(|t| !bs.contains(t)).copied().collect();
+            if let ([from], [to]) = (gone.as_slice(), new.as_slice()) {
+                let mut part = Self::kind("renamed");
+                part.insert("from".into(), json!(from));
+                part.insert("to".into(), json!(to));
+                self.push(part, name, scope);
+                return;
+            }
+            for (kind, list) in [("removed", &gone), ("added", &new)] {
+                for text in list.iter() {
+                    let mut part = Self::kind(kind);
+                    part.insert("text".into(), json!(text));
+                    self.push(part, name, scope);
+                }
+            }
+            if gone.is_empty() && new.is_empty() {
+                self.push(Self::kind("order"), name, scope);
+            }
+            return;
+        }
+        if let (Some(bi), Some(ai)) = (self.items(b), self.items(a)) {
+            let ids = |l: &[Item]| l.iter().map(|(id, ..)| id.clone()).collect::<Vec<_>>();
+            let (bids, aids) = (ids(&bi), ids(&ai));
+            for (id, label, _) in &bi {
+                if !aids.contains(id) {
+                    let mut part = Self::kind("removed");
+                    part.insert("text".into(), json!(label));
+                    self.push(part, name, scope);
+                }
+            }
+            for (id, label, _) in &ai {
+                if !bids.contains(id) {
+                    let mut part = Self::kind("added");
+                    part.insert("text".into(), json!(label));
+                    self.push(part, name, scope);
+                }
+            }
+            let before = self.parts.len();
+            for (id, label, item) in &ai {
+                if let Some((.., old)) = bi.iter().find(|(bid, ..)| bid == id) {
+                    if old != item {
+                        self.object(Some(label), old, item);
+                    }
+                }
+            }
+            let kept_b: Vec<&String> = bids.iter().filter(|id| aids.contains(id)).collect();
+            let kept_a: Vec<&String> = aids.iter().filter(|id| bids.contains(id)).collect();
+            if kept_b != kept_a && self.parts.len() == before {
+                self.push(Self::kind("order"), name, scope);
+            }
+            return;
+        }
+        self.field(scope, name, &Value::Null, &Value::Bool(true));
+    }
+
+    /// A list of things with an identity — sets, songs, a set's entries — as
+    /// `(id, label, item)`. The same song twice in a set is two entries.
+    fn items<'v>(&self, list: &'v [Value]) -> Option<Vec<Item<'v>>> {
+        let mut seen: Vec<String> = Vec::new();
+        list.iter()
+            .map(|v| {
+                let item = v.as_object()?;
+                let id = item
+                    .get("id")
+                    .or_else(|| item.get("songId"))
+                    .and_then(Value::as_str)?;
+                let text = |field: &str| {
+                    item.get(field)
+                        .and_then(Value::as_str)
+                        .filter(|s| !s.trim().is_empty())
+                        .map(String::from)
+                };
+                let label = text("name")
+                    .or_else(|| text("title"))
+                    .or_else(|| {
+                        item.get("item")?
+                            .get("title")?
+                            .as_str()
+                            .filter(|s| !s.trim().is_empty())
+                            .map(String::from)
+                    })
+                    .or_else(|| (self.titles)(id))
+                    .unwrap_or_else(|| id.to_string());
+                let n = seen.iter().filter(|s| *s == id).count();
+                seen.push(id.to_string());
+                Some((format!("{id}#{n}"), label, item))
+            })
+            .collect()
+    }
+
+    fn chordpro(&mut self, before: &str, after: &str) {
+        let (bm, bl) = split(before);
+        let (am, al) = split(after);
+        let null = Value::Null;
+        for name in bm.keys().chain(am.keys().filter(|k| !bm.contains_key(*k))) {
+            let (b, a) = (bm.get(name).unwrap_or(&null), am.get(name).unwrap_or(&null));
+            if b != a {
+                self.field(None, Some(name), b, a);
+            }
+        }
+        let count = changed_lines(&bl, &al);
+        if count > 0 {
+            let mut part = Self::kind("lines");
+            part.insert("count".into(), json!(count));
+            self.push(part, None, None);
+        }
+    }
+}
+
+/// All of a list's items as text, or None when one is not.
+fn strings(list: &[Value]) -> Option<Vec<&str>> {
+    list.iter().map(Value::as_str).collect()
+}
+
+/// The directives that are values of the song rather than part of its text.
+fn meta_name(name: &str) -> Option<&str> {
+    let name = match name {
+        "t" => "title",
+        "st" => "subtitle",
+        n => n,
+    };
+    let known = [
+        "title",
+        "subtitle",
+        "artist",
+        "composer",
+        "lyricist",
+        "album",
+        "year",
+        "key",
+        "tempo",
+        "time",
+        "capo",
+        "duration",
+        "copyright",
+        "tags",
+    ];
+    (known.contains(&name) || name.starts_with("x_")).then_some(name)
+}
+
+/// A song's values and the lines of its text, blank lines left out.
+fn split(text: &str) -> (Map<String, Value>, Vec<&str>) {
+    let mut meta = Map::new();
+    let mut lines = Vec::new();
+    for line in text.lines() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        if let Some(inner) = trimmed.strip_prefix('{').and_then(|r| r.strip_suffix('}')) {
+            let (name, value) = inner.split_once(':').unwrap_or((inner, ""));
+            if let Some(name) = meta_name(&name.trim().to_lowercase()) {
+                meta.insert(name.to_string(), json!(value.trim()));
+                continue;
+            }
+        }
+        lines.push(trimmed);
+    }
+    (meta, lines)
+}
+
+/// How many lines were changed, added or taken out: the larger side of what
+/// the longest common run leaves over.
+fn changed_lines(b: &[&str], a: &[&str]) -> usize {
+    let head = b.iter().zip(a).take_while(|(x, y)| x == y).count();
+    let (b, a) = (&b[head..], &a[head..]);
+    let tail = b
+        .iter()
+        .rev()
+        .zip(a.iter().rev())
+        .take_while(|(x, y)| x == y)
+        .count();
+    let (b, a) = (&b[..b.len() - tail], &a[..a.len() - tail]);
+    if b.len().saturating_mul(a.len()) > MAX_CELLS {
+        return b.len().max(a.len());
+    }
+    let mut row = vec![0usize; a.len() + 1];
+    for x in b {
+        let mut diagonal = 0;
+        for (j, y) in a.iter().enumerate() {
+            let up = row[j + 1];
+            row[j + 1] = if x == y { diagonal + 1 } else { up.max(row[j]) };
+            diagonal = up;
+        }
+    }
+    let common = row[a.len()];
+    (b.len() - common).max(a.len() - common)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn titles(id: &str) -> Option<String> {
+        match id {
+            "lord" => Some("Lord I Need You".into()),
+            "herz" => Some("Der mein Herz regiert".into()),
+            _ => None,
+        }
+    }
+
+    fn describe(db: &str, key: &str, b: &str, a: &str) -> Vec<Value> {
+        change(db, key, Some(b), Some(a), &titles)
+    }
+
+    #[test]
+    fn nothing_new_says_nothing() {
+        assert!(describe(
+            "user",
+            "tags",
+            r#"{"v":1,"data":["A"]}"#,
+            r#"{"v":1,"data":["A"]}"#
+        )
+        .is_empty());
+        assert!(change("user", "tags", Some("[]"), None, &titles).is_empty());
+        assert_eq!(
+            change("user", "tags", None, Some("[]"), &titles),
+            [json!({ "kind": "created" })]
+        );
+    }
+
+    #[test]
+    fn tags() {
+        let b = r#"{"v":1,"data":["Anbetung","Fest"]}"#;
+        assert_eq!(
+            describe(
+                "user",
+                "tags",
+                b,
+                r#"{"v":1,"data":["Anbetung","Fest","Advent"]}"#
+            ),
+            [json!({ "kind": "added", "text": "Advent" })]
+        );
+        assert_eq!(
+            describe("user", "tags", b, r#"{"v":1,"data":["Anbetung","Feste"]}"#),
+            [json!({ "kind": "renamed", "from": "Fest", "to": "Feste" })]
+        );
+        assert_eq!(
+            describe("user", "tags", b, r#"{"v":1,"data":["Fest","Anbetung"]}"#),
+            [json!({ "kind": "order" })]
+        );
+    }
+
+    #[test]
+    fn sets() {
+        let b = r#"{"v":1,"data":[{"id":"s1","name":"Sonntag","entries":[{"songId":"lord"}]}]}"#;
+        let a = r#"{"v":1,"data":[
+            {"id":"s1","name":"Sonntag","updatedAt":"x","entries":[{"songId":"lord"},{"songId":"herz"}]},
+            {"id":"s2","name":"Probe","entries":[]}
+        ]}"#;
+        assert_eq!(
+            describe("user", "setlists", b, a),
+            [
+                json!({ "kind": "added", "text": "Probe" }),
+                json!({ "kind": "added", "text": "Der mein Herz regiert", "name": "entries", "in": "Sonntag" }),
+            ]
+        );
+        let moved = r#"{"v":1,"data":[{"id":"s1","name":"Sonntag","entries":[{"songId":"herz"},{"songId":"lord"}]}]}"#;
+        let back = r#"{"v":1,"data":[{"id":"s1","name":"Sonntag","entries":[{"songId":"lord"},{"songId":"herz"}]}]}"#;
+        assert_eq!(
+            describe("user", "setlists", back, moved),
+            [json!({ "kind": "order", "name": "entries", "in": "Sonntag" })]
+        );
+        let capo = r#"{"v":1,"data":[{"id":"s1","name":"Sonntag","entries":[{"songId":"lord","capo":2},{"songId":"herz"}]}]}"#;
+        assert_eq!(
+            describe("user", "setlists", back, capo),
+            [
+                json!({ "kind": "field", "name": "capo", "from": null, "to": 2, "in": "Lord I Need You" })
+            ]
+        );
+    }
+
+    #[test]
+    fn index_and_song_settings() {
+        let b = r#"{"v":1,"data":[{"id":"lord","title":"Lord I Need You","key":"G","tags":[],"updatedAt":"1"}]}"#;
+        let a = r#"{"v":1,"data":[{"id":"lord","title":"Lord I Need You","key":"A","tags":["Anbetung"],"updatedAt":"2"}]}"#;
+        assert_eq!(
+            describe("library", "index", b, a),
+            [
+                json!({ "kind": "field", "name": "key", "from": "G", "to": "A", "in": "Lord I Need You" }),
+                json!({ "kind": "added", "text": "Anbetung", "name": "tags", "in": "Lord I Need You" }),
+            ]
+        );
+        assert_eq!(
+            describe(
+                "user",
+                "songSettings",
+                r#"{"v":1,"data":{}}"#,
+                r#"{"v":1,"data":{"lord":{"transpose":2}}}"#
+            ),
+            [
+                json!({ "kind": "field", "name": "transpose", "from": null, "to": 2, "in": "Lord I Need You" })
+            ]
+        );
+        assert_eq!(
+            describe(
+                "user",
+                "playerName",
+                r#"{"v":1,"data":"Anna"}"#,
+                r#"{"v":1,"data":"Ben"}"#
+            ),
+            [json!({ "kind": "field", "from": "Anna", "to": "Ben" })]
+        );
+    }
+
+    #[test]
+    fn songs() {
+        let b = "{title: Lord}\n{key: G}\n\n[G]Lord I come\nI confess\n";
+        let a = "{title: Lord}\n{key: A}\n{tempo: 72}\n\n[A]Lord I come\nI confess\nhow I lose my way\n";
+        assert_eq!(
+            describe("library", "doc.lord", b, a),
+            [
+                json!({ "kind": "field", "name": "key", "from": "G", "to": "A" }),
+                json!({ "kind": "field", "name": "tempo", "from": null, "to": "72" }),
+                json!({ "kind": "lines", "count": 2 }),
+            ]
+        );
+    }
+
+    #[test]
+    fn line_counts() {
+        assert_eq!(changed_lines(&["a", "b", "c"], &["a", "x", "c"]), 1);
+        assert_eq!(changed_lines(&["a", "b"], &["a", "b", "c", "d"]), 2);
+        assert_eq!(changed_lines(&["a", "b", "c"], &["c"]), 2);
+        assert_eq!(changed_lines(&[], &[]), 0);
+    }
+}

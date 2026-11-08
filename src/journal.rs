@@ -3,8 +3,12 @@
 //! ```text
 //!   .chordwright/changes.json
 //!     records   "<db>/<key>" → { at, by, action }   the last change to each record
-//!     recent    [{ db, key, at, by, action }]         newest first, at most `keep`
+//!     recent    [{ db, key, at, by, action, detail? }] newest first, at most `keep`
 //! ```
+//!
+//! `detail` says what a write changed (`describe.rs`). Writes merged into one
+//! entry are described together: from what was there before the first of them
+//! to what the last one left.
 //!
 //! `by` is the name the app sends in `X-Chordwright-User` — set per server in
 //! the app, not an account. Null when nobody said, and for a file saved by hand
@@ -49,6 +53,20 @@ struct State {
     records: Map<String, Value>,
     recent: Vec<Value>,
     dirty: bool,
+    /// What the record of the newest entry held before that entry's first
+    /// write — kept so a merged entry still says what changed overall. Only in
+    /// memory: after a restart the next write is described on its own.
+    head_before: Option<(String, Option<String>)>,
+}
+
+/// Says what changed from a record's old content to its new one.
+pub type Describe<'a> = &'a dyn Fn(Option<&str>, Option<&str>) -> Vec<Value>;
+
+/// A write as the store reports it, and how to say what it changed.
+pub struct Written<'a> {
+    pub before: Option<String>,
+    pub after: Option<String>,
+    pub describe: Describe<'a>,
 }
 
 pub struct Journal {
@@ -77,6 +95,7 @@ impl Journal {
                 records,
                 recent,
                 dirty: false,
+                head_before: None,
             }),
             wake: Notify::new(),
         }
@@ -90,6 +109,34 @@ impl Journal {
     /// an entry of its own in `recent` — a restore lists itself once, not once
     /// per file.
     pub fn record(&self, db: &str, key: &str, by: Option<&str>, action: &str, listed: bool) {
+        self.note(db, key, by, action, listed, None);
+    }
+
+    /// Note a write the store made, with what it changed. A write that left
+    /// the record as it was is no change and is not noted at all.
+    pub fn record_write(
+        &self,
+        db: &str,
+        key: &str,
+        by: Option<&str>,
+        action: &str,
+        written: Written,
+    ) {
+        if written.before == written.after {
+            return;
+        }
+        self.note(db, key, by, action, true, Some(written));
+    }
+
+    fn note(
+        &self,
+        db: &str,
+        key: &str,
+        by: Option<&str>,
+        action: &str,
+        listed: bool,
+        written: Option<Written>,
+    ) {
         let at = iso(now_ms());
         let by = clean_name(by);
         let mut state = self.state();
@@ -114,12 +161,28 @@ impl Journal {
                 }
                 _ => false,
             };
+            let id = format!("{db}/{key}");
             if !merged {
                 state.recent.insert(
                     0,
                     json!({ "db": db, "key": key, "at": at, "by": by, "action": action }),
                 );
                 state.recent.truncate(KEEP);
+                state.head_before = written.as_ref().map(|w| (id.clone(), w.before.clone()));
+            }
+            if let Some(w) = &written {
+                let before = match &state.head_before {
+                    Some((head, before)) if *head == id => before.clone(),
+                    _ => w.before.clone(),
+                };
+                let detail = (w.describe)(before.as_deref(), w.after.as_deref());
+                if let Some(Value::Object(entry)) = state.recent.first_mut() {
+                    if detail.is_empty() {
+                        entry.remove("detail");
+                    } else {
+                        entry.insert("detail".into(), Value::Array(detail));
+                    }
+                }
             }
         }
         state.dirty = true;
@@ -184,6 +247,44 @@ mod tests {
             Some(60)
         );
         assert_eq!(clean_name(None), None);
+    }
+
+    #[test]
+    fn writes_say_what_changed() {
+        let root =
+            std::env::temp_dir().join(format!("cw-journal-w-{}-{}", std::process::id(), now_ms()));
+        let journal = Journal::open(&root);
+        let describe = |b: Option<&str>, a: Option<&str>| {
+            crate::describe::change("user", "tags", b, a, &|_| None)
+        };
+        let write = |before: &str, after: &str| {
+            journal.record_write(
+                "user",
+                "tags",
+                Some("Anna"),
+                "write",
+                Written {
+                    before: Some(before.into()),
+                    after: Some(after.into()),
+                    describe: &describe,
+                },
+            )
+        };
+        // The same bytes again: no change, no entry.
+        write(r#"["A"]"#, r#"["A"]"#);
+        assert!(journal.recent(10).is_empty());
+        // Two writes in a row are one entry, described from the first before.
+        write(r#"["A"]"#, r#"["A","B"]"#);
+        write(r#"["A","B"]"#, r#"["A","B","C"]"#);
+        let recent = journal.recent(10);
+        assert_eq!(recent.len(), 1);
+        assert_eq!(
+            recent[0]["detail"],
+            json!([{ "kind": "added", "text": "B" }, { "kind": "added", "text": "C" }])
+        );
+        // And taken back: still one entry, now with nothing to say.
+        write(r#"["A","B","C"]"#, r#"["A"]"#);
+        assert!(journal.recent(10)[0].get("detail").is_none());
     }
 
     #[test]
