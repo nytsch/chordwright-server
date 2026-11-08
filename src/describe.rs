@@ -25,7 +25,8 @@ const MAX_PARTS: usize = 12;
 /// A value longer than this is named, not quoted.
 const MAX_SHOWN: usize = 40;
 /// Fields that move with every save and say nothing.
-const NOISE: [&str; 3] = ["updatedAt", "createdAt", "modifiedAt"];
+/// An id that changed under a part matched by its name is no news either.
+const NOISE: [&str; 4] = ["updatedAt", "createdAt", "modifiedAt", "id"];
 /// Beyond this many cells the line count is an estimate, not a diff.
 const MAX_CELLS: usize = 1_000_000;
 
@@ -206,33 +207,64 @@ impl Diff<'_> {
             return;
         }
         if let (Some(bi), Some(ai)) = (self.items(b), self.items(a)) {
-            let ids = |l: &[Item]| l.iter().map(|(id, ..)| id.clone()).collect::<Vec<_>>();
-            let (bids, aids) = (ids(&bi), ids(&ai));
-            for (id, label, _) in &bi {
-                if !aids.contains(id) {
+            // Each item now with the one it was: by id, and what is left over
+            // by name — a part of a running order made anew keeps its name,
+            // not its id, and is a changed part, not one gone and one new.
+            let mut pair: Vec<Option<usize>> = ai
+                .iter()
+                .map(|(id, ..)| bi.iter().position(|(bid, ..)| bid == id))
+                .collect();
+            let mut taken = vec![false; bi.len()];
+            for &j in pair.iter().flatten() {
+                taken[j] = true;
+            }
+            for (i, (_, label, _)) in ai.iter().enumerate() {
+                if pair[i].is_none() {
+                    if let Some(j) = (0..bi.len()).find(|&j| !taken[j] && bi[j].1 == *label) {
+                        pair[i] = Some(j);
+                        taken[j] = true;
+                    }
+                }
+            }
+            // A running order: how long it is now, before the parts it got there by.
+            if let (Some(from), Some(to)) = (bar_total(&bi), bar_total(&ai)) {
+                if from != to {
+                    let mut part = Self::kind("field");
+                    part.insert("from".into(), number(from));
+                    part.insert("to".into(), number(to));
+                    self.push(part, Some("bars"), scope);
+                }
+            }
+            for (j, (_, label, _)) in bi.iter().enumerate() {
+                if !taken[j] {
                     let mut part = Self::kind("removed");
                     part.insert("text".into(), json!(label));
                     self.push(part, name, scope);
                 }
             }
-            for (id, label, _) in &ai {
-                if !bids.contains(id) {
+            for (i, (_, label, _)) in ai.iter().enumerate() {
+                if pair[i].is_none() {
                     let mut part = Self::kind("added");
                     part.insert("text".into(), json!(label));
                     self.push(part, name, scope);
                 }
             }
             let before = self.parts.len();
-            for (id, label, item) in &ai {
-                if let Some((.., old)) = bi.iter().find(|(bid, ..)| bid == id) {
-                    if old != item {
-                        self.object(Some(label), old, item);
+            for (i, (_, label, item)) in ai.iter().enumerate() {
+                if let Some(j) = pair[i] {
+                    let old = bi[j].2;
+                    if old != *item {
+                        // Where it is, all the way down: the song, its running order, the part.
+                        let inner = match scope {
+                            Some(outer) => format!("{outer} › {label}"),
+                            None => label.clone(),
+                        };
+                        self.object(Some(&inner), old, item);
                     }
                 }
             }
-            let kept_b: Vec<&String> = bids.iter().filter(|id| aids.contains(id)).collect();
-            let kept_a: Vec<&String> = aids.iter().filter(|id| bids.contains(id)).collect();
-            if kept_b != kept_a && self.parts.len() == before {
+            let kept: Vec<usize> = pair.iter().flatten().copied().collect();
+            if !kept.windows(2).all(|w| w[0] < w[1]) && self.parts.len() == before {
                 self.push(Self::kind("order"), name, scope);
             }
             return;
@@ -259,6 +291,7 @@ impl Diff<'_> {
                 };
                 let label = text("name")
                     .or_else(|| text("title"))
+                    .or_else(|| text("label"))
                     .or_else(|| {
                         item.get("item")?
                             .get("title")?
@@ -291,6 +324,31 @@ impl Diff<'_> {
             part.insert("count".into(), json!(count));
             self.push(part, None, None);
         }
+    }
+}
+
+/// A running order's length in bars — each part's `bars` times its `repeat` —
+/// or None when the list is not one.
+fn bar_total(items: &[Item]) -> Option<f64> {
+    if items.is_empty() {
+        return None;
+    }
+    items
+        .iter()
+        .map(|(.., item)| {
+            let bars = item.get("bars")?.as_f64()?;
+            let repeat = item.get("repeat").and_then(Value::as_f64).unwrap_or(1.0);
+            Some(bars * repeat.max(1.0))
+        })
+        .sum()
+}
+
+/// A number as JSON, whole numbers without `.0`.
+fn number(x: f64) -> Value {
+    if x.fract() == 0.0 && x.abs() < 1e15 {
+        json!(x as i64)
+    } else {
+        json!(x)
     }
 }
 
@@ -449,6 +507,40 @@ mod tests {
     }
 
     #[test]
+    fn running_orders() {
+        let settings = |parts: &str| {
+            format!(
+                r#"{{"v":1,"data":{{"lord":{{"arrangements":[{{"id":"a1","name":"Standard","parts":[{parts}]}}]}}}}}}"#
+            )
+        };
+        let before = settings(
+            r#"{"id":"p1","label":"Verse 1","bars":8,"repeat":1},{"id":"p2","label":"Chorus","bars":8,"repeat":2},{"id":"p3","label":"Bridge","bars":4,"repeat":1}"#,
+        );
+        // Made anew: every part a new id, the verse longer, the bridge gone.
+        let after = settings(
+            r#"{"id":"n1","label":"Verse 1","bars":12,"repeat":1},{"id":"n2","label":"Chorus","bars":8,"repeat":2}"#,
+        );
+        // 8 + 8×2 + 4 = 28 before, 12 + 8×2 = 28 after: no new length to report.
+        assert_eq!(
+            describe("user", "songSettings", &before, &after),
+            [
+                json!({ "kind": "removed", "text": "Bridge", "name": "parts", "in": "Lord I Need You › Standard" }),
+                json!({ "kind": "field", "name": "bars", "from": 8, "to": 12, "in": "Lord I Need You › Standard › Verse 1" }),
+            ]
+        );
+        let longer = settings(
+            r#"{"id":"p1","label":"Verse 1","bars":8,"repeat":1},{"id":"p2","label":"Chorus","bars":8,"repeat":3},{"id":"p3","label":"Bridge","bars":4,"repeat":1}"#,
+        );
+        assert_eq!(
+            describe("user", "songSettings", &before, &longer),
+            [
+                json!({ "kind": "field", "name": "bars", "from": 28, "to": 36, "in": "Lord I Need You › Standard" }),
+                json!({ "kind": "field", "name": "repeat", "from": 2, "to": 3, "in": "Lord I Need You › Standard › Chorus" }),
+            ]
+        );
+    }
+
+    #[test]
     fn tags() {
         let b = r#"{"v":1,"data":["Anbetung","Fest"]}"#;
         assert_eq!(
@@ -494,7 +586,7 @@ mod tests {
         assert_eq!(
             describe("user", "setlists", back, capo),
             [
-                json!({ "kind": "field", "name": "capo", "from": null, "to": 2, "in": "Lord I Need You" })
+                json!({ "kind": "field", "name": "capo", "from": null, "to": 2, "in": "Sonntag › Lord I Need You" })
             ]
         );
     }

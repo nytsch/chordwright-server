@@ -1,5 +1,10 @@
 # Changelog
 
+## 2.6.2
+
+- **Letzte Änderungen** bei Abläufen: Teile heißen nach ihrem Namen („Verse 1“) statt nach ihrer Kennung, ein neu erzeugter Teil mit gleichem Namen gilt als geändert statt als weg und neu, und geänderte Takte oder Wiederholungen stehen da — „Lord I Need You › Standard › Verse 1: Takte 8 → 12“. Ändert sich die Länge eines Ablaufs, steht auch die Summe der Takte da.
+- Was in einem Set, einem Ablauf oder einem Teil geschah, nennt den ganzen Weg dorthin: Song, Ablauf, Teil.
+
 ## 2.6.1
 
 - **Letzte Änderungen**: Ein neu angelegter Eintrag sagt jetzt auch, womit er beginnt — das erste Set mit Namen, die ersten Tags, die Tags eines Songs in den Song-Einstellungen — statt nur „neu“.
