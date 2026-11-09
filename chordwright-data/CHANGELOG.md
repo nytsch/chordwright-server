@@ -1,11 +1,25 @@
 # Changelog
 
-## 2.6.0
+## 2.7.0
 
 - Änderungen vorschlagen: Ein Musiker kann neu **Änderungen vorschlagen** dürfen (in der Web-UI unter **Band** einstellbar). Er liest wie bisher alles, schreibt aber nichts direkt. Was er in seiner Kopie der Bibliothek ändert, schickt er als Vorschlag zurück, und erst wenn du ihn annimmst, steht es in der Bibliothek. Jeder Musiker, der mehr als nur lesen darf, kann so auch vorschlagen, was er selbst nicht darf, zum Beispiel einen Song löschen.
-- Beim Annehmen wird jede Änderung auf den Stand geschrieben, auf dem sie gemacht wurde. Hat sich ein Song inzwischen geändert, bleibt er im Vorschlag offen und kommt mit dem jetzigen Stand zurück, zum Zusammenführen oder trotzdem Übernehmen. Im Protokoll steht die Änderung unter dem Namen dessen, der sie vorgeschlagen hat.
+- Beim Annehmen wird jede Änderung auf den Stand geschrieben, auf dem sie gemacht wurde. Hat sich ein Song inzwischen geändert, bleibt er im Vorschlag offen und kommt mit dem jetzigen Stand zurück, zum Zusammenführen oder trotzdem Übernehmen. Unter **Letzte Änderungen** steht sie unter dem Namen dessen, der sie vorgeschlagen hat, und sagt wie jede andere, was sich geändert hat.
 - Für die App: `GET`/`POST /api/proposals`, `GET`/`DELETE /api/proposals/:id`, `POST /api/proposals/:id/accept`; `/api/health` sagt `proposals: true`. Die Vorschläge liegen in `.chordwright/proposals/` und gehen in keine Sicherung.
 - Web-UI, neuer Abschnitt **Vorschläge**: jeder offene Vorschlag mit Absender, Notiz und für jede Änderung einem Zeilenvergleich (rot was wegfällt, grün was dazukommt). **Ausgewählte übernehmen** schreibt die angehakten Änderungen, **Trotzdem übernehmen** auch die, die sich seitdem geändert haben, **Ablehnen** schließt ihn. Darunter die zuletzt entschiedenen. Die Karte der Bibliothek zeigt, wie viele Vorschläge warten.
+
+## 2.6.2
+
+- **Letzte Änderungen** bei Abläufen: Teile heißen nach ihrem Namen („Verse 1“) statt nach ihrer Kennung, ein neu erzeugter Teil mit gleichem Namen gilt als geändert statt als weg und neu, und geänderte Takte oder Wiederholungen stehen da — „Lord I Need You › Standard › Verse 1: Takte 8 → 12“. Ändert sich die Länge eines Ablaufs, steht auch die Summe der Takte da.
+- Was in einem Set, einem Ablauf oder einem Teil geschah, nennt den ganzen Weg dorthin: Song, Ablauf, Teil.
+
+## 2.6.1
+
+- **Letzte Änderungen**: Ein neu angelegter Eintrag sagt jetzt auch, womit er beginnt — das erste Set mit Namen, die ersten Tags, die Tags eines Songs in den Song-Einstellungen — statt nur „neu“.
+
+## 2.6.0
+
+- **Letzte Änderungen** sagen jetzt, was sich geändert hat: bei Tags welcher dazukam, wegfiel oder umbenannt wurde, bei Sets welches Set und welcher Song darin, bei Songs die geänderten Angaben (z. B. Tonart G → A) und wie viele Zeilen Text. Die App zeigt das rechts neben dem Eintrag. Mehrere Speichervorgänge kurz hintereinander werden zusammen beschrieben.
+- Ein Speichervorgang, der nichts ändert, steht nicht mehr in der Liste. Bisher schrieb die App die Tag-Liste bei jeder Song-Änderung neu, und jeder davon erschien als „Tags geändert“.
 
 ## 2.5.2
 

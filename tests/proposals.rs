@@ -198,6 +198,17 @@ fn proposals_wait_for_the_owner_and_land_on_their_base() {
     assert_eq!(done["proposal"]["decidedBy"], "Chef");
     let (_, a) = req("owner", "GET", "/api/library/record/doc.a", "");
     assert!(a["value"].as_str().unwrap().contains("[G]neu"));
+    // In the journal like any other write: under her name, saying what changed.
+    let (_, changes) = req("owner", "GET", "/api/changes?limit=5", "");
+    let entry = changes["changes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|c| c["key"] == "doc.a")
+        .unwrap()
+        .clone();
+    assert_eq!(entry["by"], "LEA", "{entry}");
+    assert!(entry["detail"].is_array(), "{entry}");
     let (status, _) = req("owner", "POST", &accept, "{}");
     assert_eq!(status, "409");
 

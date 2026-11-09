@@ -67,7 +67,7 @@ use tokio::sync::mpsc;
 
 use crate::assistant::{self, Asker, Desk};
 use crate::backups::Backups;
-use crate::journal::Journal;
+use crate::journal::{Journal, Written};
 use crate::pairing::{Attempt, Pairing};
 use crate::proposals::{self, Author, Proposals, Status};
 use crate::site::{self, Site};
@@ -726,13 +726,27 @@ async fn route(s: Arc<Shared>, req: Request<Incoming>, seen: &mut Seen) -> Respo
                     .remove(&stamp);
                 send(412, json!({ "value": current.value, "rev": current.rev }))
             }
-            Ok(Outcome::Done { rev }) => {
-                s.journal.record(
+            Ok(Outcome::Done { rev, before, after }) => {
+                let titles = std::cell::OnceCell::new();
+                let title = |id: &str| {
+                    titles
+                        .get_or_init(|| s.store.song_titles())
+                        .get(id)
+                        .cloned()
+                };
+                let describe = |b: Option<&str>, a: Option<&str>| {
+                    crate::describe::change(&db, &key, b, a, &title)
+                };
+                s.journal.record_write(
                     &db,
                     &key,
                     by.as_deref(),
                     if put { "write" } else { "remove" },
-                    true,
+                    Written {
+                        before,
+                        after,
+                        describe: &describe,
+                    },
                 );
                 s.listeners
                     .send(change_line(&db, Some(&key), client.as_deref()));

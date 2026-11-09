@@ -27,6 +27,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
 use crate::http::Shared;
+use crate::journal::Written;
 use crate::store::{is_database, is_valid_key, song_text, song_title, Expect, Outcome};
 use crate::util::{hex, iso, now_ms, parse_iso, pretty, write_atomic};
 
@@ -412,6 +413,7 @@ pub fn accept(
     let by = p.by.name.clone();
     let mut applied = Vec::new();
     let mut conflicts = Vec::new();
+    let titles = std::cell::OnceCell::new();
     for c in p.changes.iter_mut() {
         if c.state != State::Open || only.is_some_and(|o| !o.contains(&c.id())) {
             continue;
@@ -434,11 +436,32 @@ pub fn accept(
             None => s.store.remove(&c.db, &c.key, expect),
         };
         match outcome {
-            Ok(Outcome::Done { .. }) => {
+            Ok(Outcome::Done { before, after, .. }) => {
                 c.state = State::Applied;
-                // Under the author's name: it is their change, the owner let it in.
+                // Under the author's name: it is their change, the owner let it
+                // in. Described like any other write: what changed in it.
                 let action = if c.value.is_some() { "write" } else { "remove" };
-                s.journal.record(&c.db, &c.key, by.as_deref(), action, true);
+                let title = |id: &str| {
+                    titles
+                        .get_or_init(|| s.store.song_titles())
+                        .get(id)
+                        .cloned()
+                };
+                let (db, key) = (c.db.clone(), c.key.clone());
+                let describe = |b: Option<&str>, a: Option<&str>| {
+                    crate::describe::change(&db, &key, b, a, &title)
+                };
+                s.journal.record_write(
+                    &c.db,
+                    &c.key,
+                    by.as_deref(),
+                    action,
+                    Written {
+                        before,
+                        after,
+                        describe: &describe,
+                    },
+                );
                 s.listeners
                     .send(crate::http::change_line(&c.db, Some(&c.key), client));
                 applied.push(stamp);

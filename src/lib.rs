@@ -37,6 +37,7 @@ pub use assistant::{
 pub use certs::{certificate_names, ensure_own_certificate, Own};
 pub use pairing::new_code as new_pairing_code;
 pub use site::{Files, Site};
+mod describe;
 mod http;
 mod journal;
 mod pairing;

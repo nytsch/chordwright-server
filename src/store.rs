@@ -65,6 +65,11 @@ pub enum Expect {
 pub enum Outcome {
     Done {
         rev: Option<String>,
+        /// The file as it was, and as it is now (None: not there). What the
+        /// journal compares to say what changed — as the file reads, so a
+        /// song is its ChordPro text and a record its pretty-printed JSON.
+        before: Option<String>,
+        after: Option<String>,
     },
     /// Nothing changed; this is what is there now.
     Conflict(Versioned),
@@ -202,6 +207,27 @@ impl Store {
         .to_string()
     }
 
+    /// Every song's title by its id, from the song index.
+    pub fn song_titles(&self) -> std::collections::HashMap<String, String> {
+        let Some(text) = self.read_versioned("library", "index").value else {
+            return Default::default();
+        };
+        let Ok(parsed) = serde_json::from_str::<Value>(&text) else {
+            return Default::default();
+        };
+        let songs = parsed.get("data").unwrap_or(&parsed);
+        songs
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|song| {
+                let id = song.get("id")?.as_str()?;
+                let title = song.get("title")?.as_str()?;
+                Some((id.to_string(), title.to_string()))
+            })
+            .collect()
+    }
+
     pub fn read_versioned(&self, db: &str, key: &str) -> Versioned {
         let at = self.locate(db, key);
         let read = match &at.song {
@@ -323,6 +349,7 @@ impl Store {
                 return Ok(Outcome::Conflict(current));
             }
         }
+        let before = std::fs::read_to_string(&at.path).ok();
         if let Some(dir) = at.path.parent() {
             std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
         }
@@ -332,7 +359,11 @@ impl Store {
             meta.insert(id.clone(), Value::Object(entry));
             self.write_sidecar(meta).map_err(|e| e.to_string())?;
         }
-        Ok(Outcome::Done { rev: Some(rev) })
+        Ok(Outcome::Done {
+            rev: Some(rev),
+            before,
+            after: Some(body),
+        })
     }
 
     /// Remove a record; `expect` as for `write`. Removing what is already gone succeeds.
@@ -345,6 +376,7 @@ impl Store {
                 return Ok(Outcome::Conflict(current));
             }
         }
+        let before = std::fs::read_to_string(&at.path).ok();
         match std::fs::remove_file(&at.path) {
             Err(e) if e.kind() != io::ErrorKind::NotFound => return Err(e.to_string()),
             _ => {}
@@ -355,7 +387,11 @@ impl Store {
                 self.write_sidecar(meta).map_err(|e| e.to_string())?;
             }
         }
-        Ok(Outcome::Done { rev: None })
+        Ok(Outcome::Done {
+            rev: None,
+            before,
+            after: None,
+        })
     }
 }
 
@@ -461,7 +497,7 @@ mod tests {
         let root = temp();
         let store = Store::new(&root);
         store.ensure_layout().unwrap();
-        let Outcome::Done { rev: Some(rev) } = store
+        let Outcome::Done { rev: Some(rev), .. } = store
             .write("library", "doc.a", &doc("a", "eins"), Expect::Rev(None))
             .unwrap()
         else {
