@@ -192,15 +192,9 @@ impl Store {
         }
         let at = self.locate(db, key);
         if at.song.is_some() {
-            let title = std::fs::read_to_string(&at.path).ok().and_then(|text| {
-                text.lines().find_map(|line| {
-                    let inner = line.trim().strip_prefix('{')?.strip_suffix('}')?;
-                    let (name, value) = inner.split_once(':')?;
-                    matches!(name.trim(), "title" | "t")
-                        .then(|| value.trim().to_string())
-                        .filter(|v| !v.is_empty())
-                })
-            });
+            let title = std::fs::read_to_string(&at.path)
+                .ok()
+                .and_then(|text| song_title(&text));
             return title.unwrap_or_else(|| key.trim_start_matches(DOCUMENT_PREFIX).to_string());
         }
         match (db, key) {
@@ -284,19 +278,14 @@ impl Store {
         (records, revs)
     }
 
-    /// Write a record. With `Expect::Rev` the write only happens if the record
-    /// is still what the writer last saw; otherwise nothing is written and the
-    /// current state comes back. A write that would put exactly the bytes
-    /// already there is no conflict, whatever the writer last saw.
-    pub fn write(
+    /// What would be on disk for `value`, and the sidecar entry of a song —
+    /// or why it cannot be stored.
+    fn encode(
         &self,
-        db: &str,
-        key: &str,
+        at: &Location,
         value: &str,
-        expect: Expect,
-    ) -> Result<Outcome, String> {
-        let at = self.locate(db, key);
-        let (body, sidecar_entry) = match &at.song {
+    ) -> Result<(String, Option<Map<String, Value>>), String> {
+        Ok(match &at.song {
             Some(_) => {
                 let envelope: Value = serde_json::from_str(value).map_err(|e| e.to_string())?;
                 if envelope.is_null() {
@@ -328,7 +317,29 @@ impl Store {
                 Ok(parsed) => (pretty(&parsed), None),
                 Err(_) => (value.to_string(), None),
             },
-        };
+        })
+    }
+
+    /// The revision `value` would have once written to `db/key`, or why it
+    /// cannot be written there — to check a value before it is stored.
+    pub fn revision_for(&self, db: &str, key: &str, value: &str) -> Result<String, String> {
+        let (body, _) = self.encode(&self.locate(db, key), value)?;
+        Ok(revision_of(body.as_bytes()))
+    }
+
+    /// Write a record. With `Expect::Rev` the write only happens if the record
+    /// is still what the writer last saw; otherwise nothing is written and the
+    /// current state comes back. A write that would put exactly the bytes
+    /// already there is no conflict, whatever the writer last saw.
+    pub fn write(
+        &self,
+        db: &str,
+        key: &str,
+        value: &str,
+        expect: Expect,
+    ) -> Result<Outcome, String> {
+        let at = self.locate(db, key);
+        let (body, sidecar_entry) = self.encode(&at, value)?;
         let rev = revision_of(body.as_bytes());
 
         let _lock = self.writing.lock().unwrap_or_else(|e| e.into_inner());
@@ -382,6 +393,27 @@ impl Store {
             after: None,
         })
     }
+}
+
+/// A song's `{title: …}` (or `{t: …}`), when it has one.
+pub fn song_title(text: &str) -> Option<String> {
+    text.lines().find_map(|line| {
+        let inner = line.trim().strip_prefix('{')?.strip_suffix('}')?;
+        let (name, value) = inner.split_once(':')?;
+        matches!(name.trim(), "title" | "t")
+            .then(|| value.trim().to_string())
+            .filter(|v| !v.is_empty())
+    })
+}
+
+/// The text of a song as the app sends it (`{ v, data: { text } }`).
+pub fn song_text(value: &str) -> Option<String> {
+    let envelope: Value = serde_json::from_str(value).ok()?;
+    let doc = envelope
+        .get("data")
+        .filter(|d| !d.is_null())
+        .unwrap_or(&envelope);
+    doc.get("text")?.as_str().map(String::from)
 }
 
 /// Map a changed file (relative to the root, either separator) back to the

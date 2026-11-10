@@ -42,13 +42,26 @@ Deine Musiker sollen Songs, Sets und Abläufe sehen, der Bühne folgen und eintr
 - **Bühne:** folgen und auch leiten.
 - **Schreiben:** die eigenen Antworten, wann er kann (`share/chordwright/user/availability.<name>.json`), und zwar unter seinem Namen. Dazu, je nachdem, was du bei ihm einstellst:
   - **Nur lesen** (Voreinstellung): sonst nichts.
+  - **Änderungen vorschlagen:** schreibt nichts direkt, schickt aber Änderungen an Songs und Sets als Vorschlag, den du annimmst oder ablehnst. Vorschlagen kann auch jeder, der Sets oder Songs bearbeiten darf.
   - **Sets bearbeiten:** Sets anlegen, ändern, löschen und die Besetzung einteilen.
   - **Songs und Sets bearbeiten:** außerdem Songs anlegen und ändern, samt Abläufen, Song-Einstellungen und den übrigen Einstellungen der Bibliothek.
+  - **Admin: auch Vorschläge übernehmen:** wie Songs und Sets bearbeiten, und dazu sieht er alle Vorschläge und kann sie in der App übernehmen oder ablehnen. Einen Song löschen kann er auch so nicht: Steckt eine Löschung in einem Vorschlag, bleibt sie für dich offen.
+- **Spielt mit** (Haken, Voreinstellung an): Er wird nach Terminen gefragt und in Sets eingeteilt. Ohne Haken liest er nur mit, wie es sein Recht erlaubt, also auch Songs vorschlagen, wenn er **Änderungen vorschlagen** darf. Die App lässt ihn aus der Planung weg, und Termine beantworten kann er nicht. In der Liste steht er mit „nicht in der Planung“.
 - **Bleibt bei dir:** Songs löschen, Sicherungen ansehen oder wiederherstellen, die Antworten anderer. Der Server weist das ab (`403 read only`), gleich was die App versucht.
 
 Tipp auf einen Namen zeigt daneben seinen QR-Code; mit eigener CA und ohne Tunnel davor einen fürs Zertifikat, wie bei der Bibliothek. Zum Verschicken: **Bild kopieren** (mit dem Namen darunter, zum Einfügen in eine Nachricht), **Link kopieren** (antippen am Handy verbindet gleich), **Speichern** oder am Handy **Teilen**. Dort änderst du Name, Rollen und was er darf, **Verlängern** rückt nur das Ende (der Zugang bleibt, verbundene Geräte bleiben verbunden), **Von der Liste nehmen** sperrt ihn sofort; seine Antworten bleiben im Ordner. Ist die Zeit um, kommt niemand mehr mit diesem Zugang hinein. Dein eigener Token ändert sich dabei nie. Jede Bibliothek hat ihre eigenen Musiker.
 
 Ohne Tunnel zeigt der QR-Code die Adresse im Heimnetz. Für unterwegs: [Von unterwegs](#von-unterwegs-tunnel-mit-cloudflared).
+
+### Vorschläge annehmen
+
+Wer **Änderungen vorschlagen** (oder mehr) darf, kann in seiner Kopie der Bibliothek arbeiten und die Änderungen als Vorschlag schicken. In der Web-UI stehen sie unter **Vorschläge**, die Karte der Bibliothek zeigt, wie viele warten.
+
+- **Jede Änderung mit Vergleich:** Zeilen, die wegfallen, rot mit `-`, neue grün mit `+`. Gleiche Zeilen weiter weg werden zusammengefaltet. Ein neuer Song steht mit seinem Titel da, ein gelöschter als **löschen**.
+- **Ausgewählte übernehmen** schreibt die angehakten Änderungen in die Bibliothek, im Protokoll unter dem Namen dessen, der sie vorgeschlagen hat. Alle verbundenen Apps sehen sie gleich.
+- **Seitdem geändert** heißt: Den Song hat inzwischen jemand anders geändert. Der Vergleich zeigt dann den jetzigen Stand gegen den Vorschlag. Beim normalen Übernehmen bleibt so eine Änderung offen, damit nichts verloren geht. **Trotzdem übernehmen** überschreibt den jetzigen Stand mit dem Vorschlag.
+- **Ablehnen** schließt den Vorschlag. Was davon noch offen war, kommt nicht in die Bibliothek; was du schon übernommen hast, bleibt.
+- Darunter stehen die zuletzt entschiedenen. Die Vorschläge liegen in `share/chordwright/.chordwright/proposals/` und gehen in keine Sicherung.
 
 ### KI im Ablaufplaner
 

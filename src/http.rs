@@ -29,13 +29,20 @@
 //!   GET    /*                      → the app, when the server was given one (site.rs)
 //! ```
 //!
+//!   GET    /api/proposals          → { proposals: [...] }, newest first — a musician sees their own
+//!   POST   /api/proposals          → body { title, note, changes: [{ db, key, base, value }] } → 201
+//!   GET    /api/proposals/:id      → the proposal with its values, and what is there now
+//!   POST   /api/proposals/:id/accept → body { keys?, force? } → { proposal, applied, conflicts }
+//!   DELETE /api/proposals/:id      → reject (owner) or withdraw (author); a decided one goes
 //!   GET    /api/band               → { roles, members: [{ id, name, roles }], me }
 //!   POST   /api/assistant          → the AI assistant, with the library's key (assistant.rs)
 //!
 //! A musician's token (`Member`) opens the same routes to read, and the
 //! stage; it writes only `user/availability.<their id>`, under their name.
 //! Any other write, and anything under /api/backups, is 403 `read only`;
-//! once their time is up every route is 401 `expired`.
+//! once their time is up every route is 401 `expired`. One who may do more
+//! than read (`can`) may also propose changes to anything (proposals.rs);
+//! only the owner accepts them.
 //!
 //! PUT and DELETE take `If-Match: "<rev>"` or `If-None-Match: *`; when the
 //! record is no longer what the writer saw, nothing changes and the answer is
@@ -62,6 +69,7 @@ use crate::assistant::{self, Asker, Desk};
 use crate::backups::Backups;
 use crate::journal::{Journal, Written};
 use crate::pairing::{Attempt, Pairing};
+use crate::proposals::{self, Author, Proposals, Status};
 use crate::site::{self, Site};
 use crate::stage::{clean_room, Answer, Stage};
 use crate::store::{is_database, is_valid_key, key_for_path, Expect, Outcome, Store, DATABASES};
@@ -150,6 +158,8 @@ pub struct Shared {
     pub store: Store,
     pub backups: Backups,
     pub journal: Journal,
+    /// Changes waiting for the owner to accept them (proposals.rs).
+    pub proposals: Proposals,
     /// Who used the library, and how much (usage.rs).
     pub usage: Usage,
     pub stage: Stage,
@@ -189,7 +199,7 @@ fn roster(members: &[Member]) -> Value {
     Value::Array(
         members
             .iter()
-            .map(|m| json!({ "id": m.id, "name": m.name, "roles": m.roles, "can": m.can }))
+            .map(|m| json!({ "id": m.id, "name": m.name, "roles": m.roles, "can": m.can, "plays": m.plays }))
             .collect(),
     )
 }
@@ -403,6 +413,8 @@ fn kind_of(part: Option<&str>, method: &Method) -> &'static str {
         Some("stage") => "stage",
         Some("assistant") => "assistant",
         Some("backups") => "backups",
+        Some("proposals") if method == Method::GET => "read",
+        Some("proposals") => "write",
         Some("band" | "changes") => "read",
         _ if method == Method::GET || method == Method::HEAD => "read",
         _ => "write",
@@ -484,6 +496,7 @@ async fn route(s: Arc<Shared>, req: Request<Incoming>, seen: &mut Seen) -> Respo
                 "changes": true,
                 "stage": true,
                 "pairing": s.pairing.is_some(),
+                "proposals": true,
                 "assistant": s.desk.config().is_some(),
         });
         // With a token, what it may do — so a musician's app knows who it is
@@ -495,8 +508,7 @@ async fn route(s: Arc<Shared>, req: Request<Incoming>, seen: &mut Seen) -> Respo
             health["access"] = match s.access(&given) {
                 Ok(Some(Access::Owner)) => json!("owner"),
                 Ok(Some(Access::Member(m))) => {
-                    health["member"] =
-                        json!({ "id": m.id, "name": m.name, "roles": m.roles, "can": m.can });
+                    health["member"] = json!({ "id": m.id, "name": m.name, "roles": m.roles, "can": m.can, "plays": m.plays });
                     health["until"] = json!(m.until);
                     json!("member")
                 }
@@ -572,6 +584,7 @@ async fn route(s: Arc<Shared>, req: Request<Incoming>, seen: &mut Seen) -> Respo
             };
         }
         Some("assistant") => return error(405, "method not allowed"),
+        Some("proposals") => return proposals_route(&s, req, &parts[2..], &access).await,
         Some("backups") if access.member().is_some() => return read_only(),
         Some("backups") => return backups(&s, req, &parts[2..]).await,
         Some("changes") if parts.len() == 2 && method == Method::GET => {
@@ -901,5 +914,153 @@ async fn backups(s: &Arc<Shared>, req: Request<Incoming>, rest: &[String]) -> Re
         error(404, "not found")
     } else {
         error(405, "method not allowed")
+    }
+}
+
+async fn proposals_route(
+    s: &Arc<Shared>,
+    req: Request<Incoming>,
+    rest: &[String],
+    access: &Access,
+) -> Response<Body> {
+    let method = req.method().clone();
+    let member = access.member().cloned();
+    let client = header(req.headers(), "x-chordwright-client");
+    let user = user_of(req.headers());
+    // A musician under their own name, whatever the app sends.
+    let me = match &member {
+        Some(m) => Author {
+            id: m.id.clone(),
+            name: Some(m.name.clone()),
+        },
+        None => Author {
+            id: "owner".into(),
+            name: user.clone(),
+        },
+    };
+    let refused = |r: proposals::Refused| error(r.status, &r.message);
+    // The owner and an admin decide; everyone else sees their own.
+    let reviews = member.as_ref().is_none_or(|m| m.can.may_review());
+    let mine = |p: &proposals::Proposal| reviews || p.by.id == me.id;
+    let read_body = |req: Request<Incoming>| async move {
+        let limited = http_body_util::Limited::new(req.into_body(), 16 << 20);
+        match limited.collect().await {
+            Ok(b) => {
+                let bytes = b.to_bytes();
+                if bytes.is_empty() {
+                    return Ok(json!({}));
+                }
+                serde_json::from_slice::<Value>(&bytes).map_err(|_| error(400, "body is not JSON"))
+            }
+            Err(_) => Err(error(413, "too large")),
+        }
+    };
+
+    match (rest.len(), rest.get(1).map(String::as_str)) {
+        (0, _) if method == Method::GET => {
+            let all = blocking(s, |s| s.proposals.list()).await;
+            let list: Vec<Value> = all
+                .iter()
+                .filter(|p| mine(p))
+                .map(proposals::summary)
+                .collect();
+            send(200, json!({ "proposals": list }))
+        }
+        (0, _) if method == Method::POST => {
+            if member.as_ref().is_some_and(|m| !m.can.may_propose()) {
+                return error(403, "read only");
+            }
+            let body = match read_body(req).await {
+                Ok(b) => b,
+                Err(no) => return no,
+            };
+            // Someone who does not play has no answers to propose either.
+            let own = member.as_ref().filter(|m| m.plays).map(Member::answers_key);
+            let by = me.clone();
+            match blocking(s, move |s| proposals::create(s, by, own, &body)).await {
+                Ok(p) => send(201, proposals::summary(&p)),
+                Err(r) => refused(r),
+            }
+        }
+        (0, _) => error(405, "method not allowed"),
+        (1, _) | (2, Some("accept")) => {
+            let id = decode_component(&rest[0]).unwrap_or_default();
+            let id2 = id.clone();
+            let Some(p) = blocking(s, move |s| s.proposals.get(&id2))
+                .await
+                .filter(|p| mine(p))
+            else {
+                return error(404, "no such proposal");
+            };
+            match (rest.len(), method) {
+                (1, Method::GET) => {
+                    let body = blocking(s, move |s| proposals::detail(s, &p)).await;
+                    send(200, body)
+                }
+                (1, Method::DELETE) => {
+                    // Their own is taken back; anyone else's the owner turns down.
+                    let status = if p.by.id == me.id {
+                        Status::Withdrawn
+                    } else {
+                        Status::Rejected
+                    };
+                    let by = me.name.clone();
+                    match blocking(s, move |s| proposals::close(s, &id, status, by.as_deref()))
+                        .await
+                    {
+                        Ok(_) => respond(204, None, &[]),
+                        Err(r) => refused(r),
+                    }
+                }
+                (2, Method::POST) => {
+                    if !reviews {
+                        return error(403, "read only");
+                    }
+                    let body = match read_body(req).await {
+                        Ok(b) => b,
+                        Err(no) => return no,
+                    };
+                    let force = body.get("force") == Some(&Value::Bool(true));
+                    let only: Option<Vec<String>> = match body.get("keys") {
+                        None | Some(Value::Null) => None,
+                        Some(Value::Array(keys)) => Some(
+                            keys.iter()
+                                .filter_map(|k| k.as_str().map(String::from))
+                                .collect(),
+                        ),
+                        Some(_) => return error(400, "keys: a list of db/key"),
+                    };
+                    let (by, c) = (me.name.clone(), client.clone());
+                    // Removing songs stays the owner's, also by way of a proposal.
+                    let may_remove = member.is_none();
+                    let result = blocking(s, move |s| {
+                        proposals::accept(
+                            s,
+                            &id,
+                            only.as_deref(),
+                            force,
+                            may_remove,
+                            by.as_deref(),
+                            c.as_deref(),
+                        )
+                    })
+                    .await;
+                    match result {
+                        Ok(done) => send(
+                            200,
+                            json!({
+                                "proposal": proposals::summary(&done.proposal),
+                                "applied": done.applied,
+                                "conflicts": done.conflicts,
+                                "held": done.held,
+                            }),
+                        ),
+                        Err(r) => refused(r),
+                    }
+                }
+                _ => error(405, "method not allowed"),
+            }
+        }
+        _ => error(404, "not found"),
     }
 }

@@ -2,7 +2,8 @@
 //! alle Bibliotheken auf einen Blick, mit Songs, Sets, verbundenen Geräten,
 //! letzter Änderung und Sicherungen; zu der gewählten die QR-Codes zum
 //! Verbinden (bei eigener CA einer fürs Zertifikat davor), die letzten
-//! Änderungen, offene Bühnen — und für die weiteren Bibliotheken (instances.rs)
+//! Änderungen, offene Bühnen, Vorschläge der Musiker zum Übernehmen — und für
+//! die weiteren Bibliotheken (instances.rs)
 //! Anlegen, Umbenennen, neuer Token, Entfernen. Was die Hauptbibliothek
 //! betrifft, steht weiter unter „Konfiguration“.
 //!
@@ -17,7 +18,9 @@ use std::net::{IpAddr, TcpListener, TcpStream};
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use chordwright_server::{Can, Hub, Member, Stats, ROLES, USAGE_KINDS};
+use chordwright_server::{
+    Can, ChangeState, Hub, Member, ProposalStatus, Stats, ROLES, USAGE_KINDS,
+};
 use qrcodegen::{QrCode, QrCodeEcc};
 
 use crate::instances::{Entry, Registry};
@@ -125,14 +128,16 @@ pub fn order_addresses(addresses: &[String]) -> Vec<String> {
     out
 }
 
-/// Die Musiker in der Liste: wer mehr darf, steht oben (Songs und Sets, dann
-/// Sets, dann nur lesen), innerhalb gleicher Rechte nach Namen, ohne auf
-/// Groß- und Kleinschreibung zu achten.
+/// Die Musiker in der Liste: wer mehr darf, steht oben (Admin, Songs und Sets, dann
+/// Sets, dann wer vorschlagen darf, dann nur lesen), innerhalb gleicher
+/// Rechte nach Namen, ohne auf Groß- und Kleinschreibung zu achten.
 pub fn order_members(members: &mut [Member]) {
     let rank = |c: Can| match c {
-        Can::All => 0,
-        Can::Sets => 1,
-        Can::Read => 2,
+        Can::Admin => 0,
+        Can::All => 1,
+        Can::Sets => 2,
+        Can::Suggest => 3,
+        Can::Read => 4,
     };
     members.sort_by(|a, b| {
         rank(a.can)
@@ -561,6 +566,9 @@ fn notice(code: &str) -> Option<&'static str> {
         "ai-key" => "Schlüssel gespeichert. Die KI im Ablaufplaner läuft jetzt über diesen Server.",
         "ai-limits" => "Limits gespeichert.",
         "ai-off" => "Schlüssel entfernt. Die KI ist aus.",
+        "accepted" => "Übernommen. Die Änderungen stehen jetzt in der Bibliothek.",
+        "partly" => "Teilweise übernommen. Was sich inzwischen geändert hat, ist offen geblieben.",
+        "rejected" => "Abgelehnt. In der Bibliothek hat sich nichts geändert.",
         _ => return None,
     })
 }
@@ -585,7 +593,7 @@ impl Ui {
         pick: usize,
         message: Option<&str>,
         error: Option<&str>,
-        // Wohin die Seite nach dem Laden springt: `band`, `ki`, `nutzung` oder leer.
+        // Wohin die Seite nach dem Laden springt: `band`, `vorschlaege`, `ki`, `nutzung` oder leer.
         to: &str,
         // Der Zeitraum unter „Nutzung“, in Tagen.
         days: u32,
@@ -640,9 +648,17 @@ impl Ui {
                         ),
                         None => "noch keine Änderung".into(),
                     };
+                    let waiting = if st.proposals > 0 {
+                        format!(
+                            " · <span class=\"waiting\" title=\"Warten darauf, dass du sie annimmst\">{}</span>",
+                            plural(st.proposals as u64, "Vorschlag", "Vorschläge")
+                        )
+                    } else {
+                        String::new()
+                    };
                     (
                         format!(
-                            "{} · {} · <span title=\"Gerade verbundene Apps\">{}</span>",
+                            "{} · {} · <span title=\"Gerade verbundene Apps\">{}</span>{waiting}",
                             plural(st.songs, "Song", "Songs"),
                             plural(st.sets, "Set", "Sets"),
                             plural(st.devices as u64, "Gerät", "Geräte")
@@ -766,6 +782,7 @@ impl Ui {
 
         let band = self.band_section(sel, person, &shown, chosen, now);
         let ki = self.ai_section(sel);
+        let suggestions = self.proposals_section(sel, now);
         let usage = self.usage_section(sel, days, now);
 
         let figures = match &shown.stats {
@@ -876,7 +893,7 @@ impl Ui {
         // der Iframe rutscht aus dem Bild, es bleibt schwarz. `scrollTo`
         // bewegt nur dieses Fenster.
         let scroll = match to {
-            "band" | "ki" | "nutzung" => format!(
+            "band" | "vorschlaege" | "ki" | "nutzung" => format!(
                 "<script>addEventListener('load',()=>{{const b=document.getElementById('{to}');if(b)scrollTo(0,b.getBoundingClientRect().top+scrollY-16)}})</script>\n"
             ),
             _ => String::new(),
@@ -892,7 +909,7 @@ impl Ui {
             "{HEAD}<header><h1>Chordwright Data</h1><p class=\"muted\">{sub}</p></header>\n{banner}\
              <h2>Bibliotheken</h2>\n<div class=\"libs\">\n{cards}{create}\n</div>\n\
              <article>\n<h2>{}</h2>\n{chips}\n<div class=\"steps\">\n{steps}\n</div>\n\
-             <h3 id=\"band\">Band</h3>\n{band}\n<h3 id=\"ki\">KI</h3>\n{ki}\n<h3>Zahlen</h3>\n{figures}\n<h3 id=\"nutzung\">Nutzung</h3>\n{usage}\n<h3>Verwalten</h3>\n{manage}\n</article>\n</main>\n{LOCAL_TIME}{SHARE}{scroll}</body>\n</html>\n",
+             <h3 id=\"band\">Band</h3>\n{band}\n<h3 id=\"vorschlaege\">Vorschläge</h3>\n{suggestions}\n<h3 id=\"ki\">KI</h3>\n{ki}\n<h3>Zahlen</h3>\n{figures}\n<h3 id=\"nutzung\">Nutzung</h3>\n{usage}\n<h3>Verwalten</h3>\n{manage}\n</article>\n</main>\n{LOCAL_TIME}{SHARE}{scroll}</body>\n</html>\n",
             esc(&shown.name)
         )
     }
@@ -1182,6 +1199,14 @@ impl Ui {
                 "<select name=\"can\" aria-label=\"Darf\" title=\"Sicherungen und Songs löschen bleiben bei dir\">{options}</select>"
             )
         };
+        // Ob er mitspielt: nach Terminen gefragt und in Sets eingeteilt wird.
+        // Ohne liest er nur mit (und schlägt, wenn er darf, Songs vor).
+        let plays_box = |on: bool| -> String {
+            format!(
+                "<label class=\"plays\" title=\"Wird nach Terminen gefragt und in Sets eingeteilt. Ohne Haken liest er nur mit.\"><input type=\"checkbox\" name=\"plays\" value=\"1\"{}>spielt mit</label>",
+                if on { " checked" } else { "" }
+            )
+        };
         let state = |m: &Member| match m.until {
             _ if m.expired(now) => "abgelaufen".to_string(),
             None => "bis auf Widerruf".to_string(),
@@ -1202,6 +1227,11 @@ impl Ui {
                     String::new()
                 } else {
                     format!(" · {}", m.can.label())
+                };
+                let can = if m.plays {
+                    can
+                } else {
+                    format!("{can} · nicht in der Planung")
                 };
                 let can = match m.ai {
                     Some(n) => format!("{can} · KI {n}/Tag"),
@@ -1229,9 +1259,10 @@ impl Ui {
             "<form class=\"row\" method=\"post\" action=\"./\">{csrf}<input type=\"hidden\" name=\"do\" value=\"member-add\"><input type=\"hidden\" name=\"id\" value=\"{id}\">\
              <input name=\"name\" required maxlength=\"60\" placeholder=\"Name\" aria-label=\"Name\" autocomplete=\"off\">\
              <span class=\"roles\" role=\"group\" aria-label=\"Rollen\">{}</span>\
-             {}<select name=\"days\" aria-label=\"Wie lange\">{}</select><button>Aufnehmen</button></form>",
+             {}{}<select name=\"days\" aria-label=\"Wie lange\">{}</select><button>Aufnehmen</button></form>",
             boxes(&[]),
             rights(Can::Read),
+            plays_box(true),
             choices(30)
         );
         let Some(m) = members.iter().find(|m| m.id == person) else {
@@ -1319,7 +1350,7 @@ impl Ui {
             "<section>\n  <p><b>{}</b> <span class=\"muted\">· {}</span></p>\n  \
              <form class=\"row\" method=\"post\" action=\"./\">{hidden}<input type=\"hidden\" name=\"do\" value=\"member-edit\">\
              <input name=\"name\" required maxlength=\"60\" value=\"{}\" aria-label=\"Name\">\
-             <span class=\"roles\" role=\"group\" aria-label=\"Rollen\">{}</span>{}{}<button class=\"quiet\">Speichern</button></form>\n  \
+             <span class=\"roles\" role=\"group\" aria-label=\"Rollen\">{}</span>{}{}{}<button class=\"quiet\">Speichern</button></form>\n  \
              <form class=\"row\" method=\"post\" action=\"./\">{hidden}<input type=\"hidden\" name=\"do\" value=\"member-extend\">\
              <select name=\"days\" aria-label=\"Ab jetzt für\">{}</select><button class=\"quiet\" title=\"Der Token bleibt; verbundene Geräte bleiben verbunden\">Verlängern</button></form>\n  \
              <form class=\"row\" method=\"post\" action=\"./\" onsubmit=\"return confirm('Von der Liste nehmen? Mit diesem Zugang kommt niemand mehr hinein.')\">{hidden}<input type=\"hidden\" name=\"do\" value=\"member-remove\">\
@@ -1329,6 +1360,7 @@ impl Ui {
             esc(&m.name),
             boxes(&m.roles),
             rights(m.can),
+            plays_box(m.plays),
             ai_input,
             choices(if m.until.is_none() { 0 } else { 30 })
         );
@@ -1408,6 +1440,121 @@ impl Ui {
         )
     }
 
+    /// Was Musiker vorschlagen: offen mit Vergleich, Übernehmen und Ablehnen;
+    /// darunter die zuletzt entschiedenen.
+    fn proposals_section(&self, sel: &str, now: i64) -> String {
+        let lib = (!sel.is_empty()).then_some(sel);
+        let Some(all) = self.hub.proposals(lib) else {
+            return String::new();
+        };
+        let csrf = self.csrf();
+        let id = esc(sel);
+        let (open, decided): (Vec<_>, Vec<_>) =
+            all.iter().partition(|p| p.status == ProposalStatus::Open);
+        let mut out = String::new();
+        if open.is_empty() {
+            out.push_str("<p class=\"muted\">Keine offenen Vorschläge. Wer unter Band <b>Änderungen vorschlagen</b> (oder mehr) darf, kann aus seiner Kopie der Bibliothek Änderungen schicken. Sie warten hier, bis du sie übernimmst oder ablehnst.</p>");
+        }
+        for (n, p) in open.iter().enumerate() {
+            let Some((p, changes)) = self.hub.proposal(lib, &p.id) else {
+                continue;
+            };
+            let pid = esc(&p.id);
+            let waiting: Vec<_> = changes
+                .iter()
+                .filter(|c| c.change.state == ChangeState::Open)
+                .collect();
+            let stale = waiting.iter().filter(|c| c.stale).count();
+            let who =
+                p.by.name
+                    .as_deref()
+                    .map(|n| format!("von {}", esc(n)))
+                    .unwrap_or_else(|| "ohne Namen".into());
+            let stale_note = if stale > 0 {
+                format!(" · <span class=\"stale\">{} seitdem geändert</span>", stale)
+            } else {
+                String::new()
+            };
+            let rows: String = changes
+                .iter()
+                .map(|c| {
+                    let kind = match (&c.before, &c.after) {
+                        (None, Some(_)) => "neu",
+                        (Some(_), None) => "löschen",
+                        (None, None) => "schon weg",
+                        _ => "geändert",
+                    };
+                    if c.change.state == ChangeState::Applied {
+                        return format!(
+                            "<div class=\"change done\"><b>{}</b> <span class=\"muted\">· {kind} · übernommen</span></div>",
+                            esc(&c.label)
+                        );
+                    }
+                    let flag = if c.stale {
+                        " <span class=\"stale\" title=\"Seit dem Vorschlag hat sich das in der Bibliothek geändert. Der Vergleich zeigt den jetzigen Stand gegen den Vorschlag. Übernehmen lässt es aus, Trotzdem übernehmen überschreibt den jetzigen Stand.\">seitdem geändert</span>"
+                    } else {
+                        ""
+                    };
+                    let diff = diff_lines(
+                        c.before.as_deref().unwrap_or(""),
+                        c.after.as_deref().unwrap_or(""),
+                    );
+                    format!(
+                        "<div class=\"change\"><label><input type=\"checkbox\" name=\"key\" value=\"{}/{}\" checked> <b>{}</b> <span class=\"muted\">· {kind}</span>{flag}</label>{diff}</div>",
+                        esc(&c.change.db),
+                        esc(&c.change.key),
+                        esc(&c.label)
+                    )
+                })
+                .collect();
+            let note = p
+                .note
+                .as_deref()
+                .map(|n| format!("<p class=\"note\">{}</p>", esc(n)))
+                .unwrap_or_default();
+            let force = if stale > 0 {
+                "<button class=\"quiet\" name=\"force\" value=\"1\" onclick=\"return confirm('Auch übernehmen, was sich seitdem geändert hat? Der jetzige Stand dieser Songs wird überschrieben.')\" title=\"Auch was sich seitdem geändert hat: der jetzige Stand wird überschrieben\">Trotzdem übernehmen</button>"
+            } else {
+                ""
+            };
+            out.push_str(&format!(
+                "<details class=\"prop\"{}><summary><b>{}</b> <span class=\"muted\">{who} · {} · {}</span>{stale_note}</summary>\n{note}\
+                 <form method=\"post\" action=\"./\">{csrf}<input type=\"hidden\" name=\"do\" value=\"proposal-accept\"><input type=\"hidden\" name=\"id\" value=\"{id}\"><input type=\"hidden\" name=\"pid\" value=\"{pid}\">\
+                 {rows}<div class=\"row\"><button>Ausgewählte übernehmen</button>{force}</div></form>\
+                 <form method=\"post\" action=\"./\" onsubmit=\"return confirm('Ablehnen? Was davon noch offen ist, kommt nicht in die Bibliothek.')\">{csrf}<input type=\"hidden\" name=\"do\" value=\"proposal-reject\"><input type=\"hidden\" name=\"id\" value=\"{id}\"><input type=\"hidden\" name=\"pid\" value=\"{pid}\">\
+                 <button class=\"quiet danger\">Ablehnen</button></form></details>\n",
+                if n == 0 { " open" } else { "" },
+                esc(&p.title),
+                ago(p.created_ms(), now),
+                plural(waiting.len() as u64, "Änderung offen", "Änderungen offen"),
+            ));
+        }
+        if !decided.is_empty() {
+            let rows: String = decided
+                .iter()
+                .take(5)
+                .map(|p| {
+                    let status = match p.status {
+                        ProposalStatus::Accepted => "übernommen",
+                        ProposalStatus::Rejected => "abgelehnt",
+                        ProposalStatus::Withdrawn => "zurückgezogen",
+                        ProposalStatus::Open => "offen",
+                    };
+                    format!(
+                        "<li><span class=\"what\">{}</span> <span class=\"muted\">{} · {status} {}</span></li>",
+                        esc(&p.title),
+                        p.by.name.as_deref().map(esc).unwrap_or_default(),
+                        ago(p.decided_ms().unwrap_or_else(|| p.created_ms()), now)
+                    )
+                })
+                .collect();
+            out.push_str(&format!(
+                "<h4>Zuletzt entschieden</h4>\n<ul class=\"rows\">{rows}</ul>"
+            ));
+        }
+        out
+    }
+
     fn csrf(&self) -> String {
         format!(
             "<input type=\"hidden\" name=\"csrf\" value=\"{}\">",
@@ -1428,6 +1575,8 @@ impl Ui {
         }
         let fail = |e: String| (id.clone(), e);
         let person = field("p");
+        // Ein nicht angehakter Kasten schickt nichts: dann spielt er nicht mit.
+        let plays = || field("plays") == "1";
         let days = || field("days").trim().parse::<u32>().unwrap_or(30).min(365);
         // Leer: keine eigene Zahl (für einen Musiker: wie für alle; für dich: ohne Grenze).
         let count = |name: &str| {
@@ -1461,6 +1610,7 @@ impl Ui {
                         &field("name"),
                         &form_fields(body, "role"),
                         Can::parse(&field("can")),
+                        plays(),
                         days(),
                         now_ms(),
                     )
@@ -1475,6 +1625,7 @@ impl Ui {
                         &field("name"),
                         &form_fields(body, "role"),
                         Can::parse(&field("can")),
+                        plays(),
                         count("ai"),
                     )
                     .map_err(fail)?;
@@ -1506,6 +1657,34 @@ impl Ui {
                 self.registry.remove_assistant(&id).map_err(fail)?;
                 Ok(format!("?i={id}&m=ai-off&to=ki"))
             }
+            "proposal-accept" => {
+                let keys = form_fields(body, "key");
+                if keys.is_empty() {
+                    return Err(fail("Keine Änderung ausgewählt.".into()));
+                }
+                let done = self
+                    .hub
+                    .accept_proposal(
+                        (!id.is_empty()).then_some(id.as_str()),
+                        &field("pid"),
+                        Some(&keys),
+                        field("force") == "1",
+                        None,
+                    )
+                    .map_err(|e| fail(proposal_error(&e)))?;
+                let m = if done.conflicts > 0 {
+                    "partly"
+                } else {
+                    "accepted"
+                };
+                Ok(format!("?i={id}&m={m}&to=vorschlaege"))
+            }
+            "proposal-reject" => {
+                self.hub
+                    .reject_proposal((!id.is_empty()).then_some(id.as_str()), &field("pid"), None)
+                    .map_err(|e| fail(proposal_error(&e)))?;
+                Ok(format!("?i={id}&m=rejected&to=vorschlaege"))
+            }
             "remove" => {
                 self.registry.remove(&id).map_err(fail)?;
                 Ok("?m=removed".into())
@@ -1513,6 +1692,102 @@ impl Ui {
             _ => Err((id, "Unbekannte Aktion.".into())),
         }
     }
+}
+
+/// Was der Server beim Vorschlag sagt, für einen Menschen.
+fn proposal_error(e: &str) -> String {
+    match e {
+        "no such proposal" => "Diesen Vorschlag gibt es nicht mehr.".into(),
+        "already decided" => "Über diesen Vorschlag ist schon entschieden.".into(),
+        other => other.to_string(),
+    }
+}
+
+/// Mehr Zeilen vergleicht die Seite nicht: das wäre kein Song mehr.
+const DIFF_MAX: usize = 3000;
+/// Gleiche Zeilen um jede Änderung herum; der Rest wird zusammengefaltet.
+const DIFF_CONTEXT: usize = 2;
+
+/// Was bleibt, geht und kommt, Zeile für Zeile (längste gemeinsame
+/// Teilfolge), als `<pre>`.
+fn diff_lines(before: &str, after: &str) -> String {
+    let a: Vec<&str> = before.lines().collect();
+    let b: Vec<&str> = after.lines().collect();
+    if a.len() > DIFF_MAX || b.len() > DIFF_MAX {
+        return format!(
+            "<p class=\"muted small\">Zu lang zum Vergleichen: {} statt {} Zeilen.</p>",
+            b.len(),
+            a.len()
+        );
+    }
+    // lcs[i][j]: wie lang die gemeinsame Teilfolge von a[i..] und b[j..] ist.
+    let mut lcs = vec![vec![0u16; b.len() + 1]; a.len() + 1];
+    for i in (0..a.len()).rev() {
+        for j in (0..b.len()).rev() {
+            lcs[i][j] = if a[i] == b[j] {
+                lcs[i + 1][j + 1] + 1
+            } else {
+                lcs[i + 1][j].max(lcs[i][j + 1])
+            };
+        }
+    }
+    let mut ops: Vec<(char, &str)> = Vec::new();
+    let (mut i, mut j) = (0, 0);
+    while i < a.len() || j < b.len() {
+        if i < a.len() && j < b.len() && a[i] == b[j] {
+            ops.push((' ', a[i]));
+            i += 1;
+            j += 1;
+        } else if i < a.len() && (j == b.len() || lcs[i + 1][j] >= lcs[i][j + 1]) {
+            // Bei Gleichstand erst was geht, dann was kommt.
+            ops.push(('-', a[i]));
+            i += 1;
+        } else {
+            ops.push(('+', b[j]));
+            j += 1;
+        }
+    }
+    if ops.iter().all(|(op, _)| *op == ' ') {
+        return "<p class=\"muted small\">Nur Leerzeichen oder Zeilenenden anders.</p>".into();
+    }
+    let near: Vec<bool> = (0..ops.len())
+        .map(|k| {
+            let from = k.saturating_sub(DIFF_CONTEXT);
+            let to = (k + DIFF_CONTEXT + 1).min(ops.len());
+            ops[from..to].iter().any(|(op, _)| *op != ' ')
+        })
+        .collect();
+    let mut out = String::new();
+    let mut skipped = 0;
+    for (k, (op, line)) in ops.iter().enumerate() {
+        if !near[k] {
+            skipped += 1;
+            continue;
+        }
+        if skipped > 0 {
+            out.push_str(&format!(
+                "<span class=\"gap\">⋯ {}</span>",
+                plural(skipped, "Zeile gleich", "Zeilen gleich")
+            ));
+            skipped = 0;
+        }
+        let class = match op {
+            '+' => "add",
+            '-' => "del",
+            _ => "ctx",
+        };
+        out.push_str(&format!(
+            "<span class=\"{class}\">{op} {}</span>",
+            esc(line)
+        ));
+    }
+    if skipped > 0 {
+        out.push_str(&format!(
+            "<span class=\"gap\">⋯ {}</span>",
+            plural(skipped, "Zeile gleich", "Zeilen gleich")
+        ));
+    }
+    format!("<pre class=\"diff\">{out}</pre>")
 }
 
 const HEAD: &str = r#"<!doctype html>
@@ -1572,6 +1847,8 @@ const HEAD: &str = r#"<!doctype html>
   .roles { display: inline-flex; flex-wrap: wrap; gap: 6px; }
   .roles label { display: inline-flex; align-items: center; gap: 4px; min-height: 36px; padding: 0 10px; border: 1px solid var(--line); border-radius: 999px; font-weight: 600; cursor: pointer; }
   .roles input { margin: 0; flex: none; min-height: 0; padding: 0; }
+  .plays { display: inline-flex; align-items: center; gap: 6px; min-height: 36px; padding: 0 10px; border: 1px solid var(--line); border-radius: 999px; cursor: pointer; }
+  .plays input { margin: 0; flex: none; min-height: 0; padding: 0; }
   .letter { display: inline-grid; place-items: center; width: 22px; height: 22px; border: 1px solid var(--line); border-radius: 6px; font-size: 12px; font-weight: 600; }
   .who { font-weight: 600; }
   .band { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 24px; align-items: start; }
@@ -1623,6 +1900,20 @@ const HEAD: &str = r#"<!doctype html>
   table.usage th.num { text-align: right; }
   table.usage td { padding: 6px 8px; border-bottom: 1px solid var(--line); vertical-align: top; white-space: nowrap; }
   table.usage td:first-child { white-space: normal; padding-left: 0; }
+  .waiting { color: var(--accent); font-weight: 600; }
+  .prop { border: 1px solid var(--line); border-radius: 12px; background: var(--card); padding: 10px 14px; margin: 0 0 10px; }
+  .prop summary { cursor: pointer; }
+  .prop[open] summary { margin-bottom: 8px; }
+  .change { padding: 8px 0; border-top: 1px solid var(--line); }
+  .change label { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; cursor: pointer; }
+  .change input { margin: 0; min-height: 0; }
+  .change.done { opacity: .7; }
+  .stale { color: var(--danger); font-size: 13px; }
+  pre.diff { margin: 6px 0 0; padding: 8px 10px; max-height: 320px; overflow: auto; border-radius: 8px; background: var(--bg); font: 12px/1.5 ui-monospace, monospace; }
+  pre.diff span { display: block; white-space: pre-wrap; overflow-wrap: anywhere; }
+  pre.diff .add { background: color-mix(in srgb, var(--c3) 18%, transparent); }
+  pre.diff .del { background: color-mix(in srgb, var(--c8) 18%, transparent); }
+  pre.diff .gap { color: var(--muted); }
 </style>
 </head>
 <body>
@@ -1875,6 +2166,258 @@ mod tests {
     }
 
     #[test]
+    fn the_proposals_section() {
+        use chordwright_server::{Options, Server};
+        let root = std::env::temp_dir().join(format!("cw-panel-prop-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let (data, share) = (root.join("data"), root.join("share"));
+        std::fs::create_dir_all(&data).unwrap();
+        let server = Server::start(Options {
+            dir: share.join("chordwright"),
+            token: "owner".into(),
+            port: 0,
+            ..Options::default()
+        })
+        .unwrap();
+        let port = server.ready().port;
+        let registry = Arc::new(Registry::open(
+            &data,
+            &share,
+            "chordwright",
+            0.0,
+            3,
+            server.hub(),
+        ));
+        let ui = Ui {
+            panel: Panel {
+                addresses: Vec::new(),
+                scheme: "https".into(),
+                port: "4174".into(),
+                token: "owner".into(),
+                own_ca: false,
+                folder: "chordwright".into(),
+                samba: false,
+                public_url: None,
+            },
+            registry: registry.clone(),
+            hub: server.hub(),
+            secret: "s".into(),
+        };
+        let http = |token: &str, method: &str, path: &str, body: &str| {
+            let mut stream = TcpStream::connect(("127.0.0.1", port)).unwrap();
+            write!(
+                stream,
+                "{method} {path} HTTP/1.1\r\nhost: x\r\nauthorization: Bearer {token}\r\nconnection: close\r\ncontent-length: {}\r\n\r\n{body}",
+                body.len()
+            )
+            .unwrap();
+            let mut answer = String::new();
+            stream.read_to_string(&mut answer).unwrap();
+            let body = answer.split_once("\r\n\r\n").map(|(_, b)| b.to_string());
+            serde_json::from_str::<serde_json::Value>(&body.unwrap_or_default()).unwrap_or_default()
+        };
+        let song = |text: &str| serde_json::json!({ "v": 1, "data": { "text": text } }).to_string();
+        http(
+            "owner",
+            "PUT",
+            "/api/library/record/doc.a",
+            &song("{title: Alpha}\n[C]eins\nzwei\ndrei"),
+        );
+        http(
+            "owner",
+            "PUT",
+            "/api/library/record/doc.b",
+            &song("{title: Beta}\nalt"),
+        );
+        assert!(ui
+            .proposals_section("", now_ms())
+            .contains("Keine offenen Vorschläge"));
+
+        let lea = registry
+            .add_member("", "Lea", &[], Can::Suggest, true, 0, now_ms())
+            .unwrap();
+        let revs = http(&lea.token, "GET", "/api/library?revs=1", "")["revs"].clone();
+        let made = http(
+            &lea.token,
+            "POST",
+            "/api/proposals",
+            &serde_json::json!({
+                "title": "Akkorde <neu>",
+                "note": "Bitte prüfen",
+                "changes": [
+                    { "db": "library", "key": "doc.a", "base": revs["doc.a"], "value": song("{title: Alpha}\n[G]eins\nzwei\ndrei") },
+                    { "db": "library", "key": "doc.b", "base": revs["doc.b"], "value": song("{title: Beta}\nneu") },
+                    { "db": "library", "key": "doc.c", "base": null, "value": song("{title: Gamma}") },
+                ]
+            })
+            .to_string(),
+        );
+        let pid = made["id"].as_str().unwrap().to_string();
+        // Meanwhile Beta changes in the library.
+        http(
+            "owner",
+            "PUT",
+            "/api/library/record/doc.b",
+            &song("{title: Beta}\nanders"),
+        );
+
+        let page = ui.page("", "", 0, None, None, "vorschlaege", 7);
+        assert!(page.contains("1 Vorschlag"), "the card counts it");
+        if let Ok(out) = std::env::var("CW_PANEL_DUMP_PROPOSALS") {
+            std::fs::write(out, &page).unwrap();
+        }
+        let section = ui.proposals_section("", now_ms());
+        assert!(section.contains("Akkorde &lt;neu&gt;") && section.contains("von Lea"));
+        assert!(section.contains("Bitte prüfen"));
+        assert!(
+            section.contains("<span class=\"del\">- [C]eins</span>"),
+            "{section}"
+        );
+        assert!(section.contains("<span class=\"add\">+ [G]eins</span>"));
+        assert!(section.contains("<b>Gamma</b> <span class=\"muted\">· neu"));
+        assert!(section.contains("1 seitdem geändert") && section.contains("Trotzdem übernehmen"));
+
+        let form = |what: &str, keys: &[&str]| {
+            let keys: String = keys
+                .iter()
+                .map(|k| format!("&key={}", form_encode(k)))
+                .collect();
+            format!("csrf=s&id=&do={what}&pid={pid}{keys}")
+        };
+        assert!(
+            ui.act(&form("proposal-accept", &[])).is_err(),
+            "nothing picked"
+        );
+        assert_eq!(
+            ui.act(&form(
+                "proposal-accept",
+                &["library/doc.a", "library/doc.b", "library/doc.c"]
+            ))
+            .unwrap(),
+            "?i=&m=partly&to=vorschlaege"
+        );
+        let a = http("owner", "GET", "/api/library/record/doc.a", "");
+        assert!(a["value"].as_str().unwrap().contains("[G]eins"));
+        assert_eq!(a["change"]["by"], "Lea");
+        let section = ui.proposals_section("", now_ms());
+        assert!(section.contains("übernommen") && section.contains("1 Änderung offen"));
+
+        // Beta, which changed meanwhile, is taken anyway.
+        assert_eq!(
+            ui.act(&format!(
+                "{}&force=1",
+                form("proposal-accept", &["library/doc.b"])
+            ))
+            .unwrap(),
+            "?i=&m=accepted&to=vorschlaege"
+        );
+        let b = http("owner", "GET", "/api/library/record/doc.b", "");
+        assert!(b["value"].as_str().unwrap().contains("neu"));
+        let section = ui.proposals_section("", now_ms());
+        assert!(
+            section.contains("Keine offenen Vorschläge") && section.contains("Zuletzt entschieden")
+        );
+        assert!(ui
+            .act(&form("proposal-accept", &["library/doc.b"]))
+            .is_err());
+
+        // Another one, turned down.
+        let made = http(
+            &lea.token,
+            "POST",
+            "/api/proposals",
+            &serde_json::json!({ "title": "Weg damit", "changes": [{ "db": "library", "key": "doc.c", "base": null, "value": null }] }).to_string(),
+        );
+        let other = made["id"].as_str().unwrap();
+        ui.act(&format!("csrf=s&id=&do=proposal-reject&pid={other}"))
+            .unwrap();
+        assert!(http("owner", "GET", "/api/library/record/doc.c", "")["value"].is_string());
+        assert!(ui.proposals_section("", now_ms()).contains("abgelehnt"));
+        drop(server);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn someone_who_reads_along() {
+        use chordwright_server::{Options, Server};
+        let root = std::env::temp_dir().join(format!("cw-panel-plays-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let (data, share) = (root.join("data"), root.join("share"));
+        std::fs::create_dir_all(&data).unwrap();
+        let server = Server::start(Options {
+            dir: share.join("chordwright"),
+            token: "owner".into(),
+            port: 0,
+            ..Options::default()
+        })
+        .unwrap();
+        let registry = Arc::new(Registry::open(
+            &data,
+            &share,
+            "chordwright",
+            0.0,
+            3,
+            server.hub(),
+        ));
+        let ui = Ui {
+            panel: Panel {
+                addresses: Vec::new(),
+                scheme: "https".into(),
+                port: "4174".into(),
+                token: "owner".into(),
+                own_ca: false,
+                folder: "chordwright".into(),
+                samba: false,
+                public_url: None,
+            },
+            registry: registry.clone(),
+            hub: server.hub(),
+            secret: "s".into(),
+        };
+        // The box is ticked when adding someone; unticked, they only read along.
+        let page = ui.page("", "", 0, None, None, "band", 7);
+        assert!(page.contains("name=\"plays\" value=\"1\" checked"));
+        ui.act("csrf=s&id=&do=member-add&name=Ute&can=suggest&days=0")
+            .unwrap();
+        ui.act("csrf=s&id=&do=member-add&name=Niko&can=read&plays=1&days=0")
+            .unwrap();
+        let members = registry.members("");
+        let ute = members.iter().find(|m| m.name == "Ute").unwrap();
+        assert!(!ute.plays && ute.can == Can::Suggest);
+        assert!(members.iter().find(|m| m.name == "Niko").unwrap().plays);
+        assert_eq!(
+            server.hub().members(None).unwrap().len(),
+            2,
+            "the server knows at once"
+        );
+        let page = ui.page("", &ute.id, 0, None, None, "band", 7);
+        assert!(page.contains("nicht in der Planung"));
+        assert!(
+            page.contains("name=\"plays\" value=\"1\">spielt mit"),
+            "unticked when editing her"
+        );
+        // Edited back to playing.
+        ui.act(&format!(
+            "csrf=s&id=&do=member-edit&p={}&name=Ute&can=suggest&plays=1",
+            ute.id
+        ))
+        .unwrap();
+        assert!(registry.members("").iter().all(|m| m.plays));
+        drop(server);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn diffs() {
+        let d = diff_lines("a\nb\nc\nd\ne\nf\ng\nh", "a\nb\nc\nd\nX\nf\ng\nh");
+        assert!(d.contains("⋯ 2 Zeilen gleich"), "{d}");
+        assert!(d.contains("<span class=\"del\">- e</span><span class=\"add\">+ X</span>"));
+        assert!(diff_lines("", "neu").contains("+ neu"));
+        assert!(diff_lines("a\n", "a").contains("Nur Leerzeichen"));
+        assert!(diff_lines("<b>", "x").contains("&lt;b&gt;"));
+    }
+
+    #[test]
     fn the_band_side_by_side() {
         use chordwright_server::{Options, Server};
         let root = std::env::temp_dir().join(format!("cw-panel-band-{}", std::process::id()));
@@ -1919,6 +2462,7 @@ mod tests {
                     &format!("Musiker/{i}"),
                     &["P".into()],
                     Can::Read,
+                    true,
                     0,
                     now_ms(),
                 )
@@ -2098,6 +2642,7 @@ mod tests {
             until: None,
             can,
             ai: None,
+            plays: true,
         };
         let mut list = vec![
             m("zoe", Can::Read),

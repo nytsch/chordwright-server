@@ -41,12 +41,17 @@ mod describe;
 mod http;
 mod journal;
 mod pairing;
+mod proposals;
 mod site;
 mod stage;
 mod store;
 mod usage;
 mod util;
 
+pub use proposals::{
+    Author as ProposalAuthor, Change as ProposalChange, Proposal, State as ChangeState,
+    Status as ProposalStatus,
+};
 pub use usage::{
     Tally as UsageTally, UsagePerson, UsageReport, Visit as UsageVisit, KINDS as USAGE_KINDS,
 };
@@ -158,24 +163,42 @@ pub enum Can {
     /// Nothing else.
     #[default]
     Read,
+    /// Nothing directly, but changes to anything as a proposal the owner
+    /// accepts or rejects (proposals.rs).
+    Suggest,
     /// The sets and who plays in them (`user/setlists`, `user/lineups`).
     Sets,
     /// Also songs, their arrangements, and the rest of the user database.
     All,
+    /// As `All`, and takes or turns down what others propose — all of it but
+    /// removing songs, which stays open for the owner.
+    Admin,
 }
 
 impl Can {
-    pub const ALL: [Can; 3] = [Can::Read, Can::Sets, Can::All];
+    pub const ALL: [Can; 5] = [Can::Read, Can::Suggest, Can::Sets, Can::All, Can::Admin];
 
     pub fn is_read(&self) -> bool {
         *self == Can::Read
     }
 
-    /// As a form sends it (`read`, `sets`, `all`); anything else reads only.
+    /// Whether they may send proposals: everyone who may do more than read.
+    pub fn may_propose(&self) -> bool {
+        *self != Can::Read
+    }
+
+    /// Whether they see everyone's proposals and take or turn them down.
+    pub fn may_review(&self) -> bool {
+        *self == Can::Admin
+    }
+
+    /// As a form sends it (`read`, `suggest`, `sets`, `all`); anything else reads only.
     pub fn parse(text: &str) -> Can {
         match text {
+            "suggest" => Can::Suggest,
             "sets" => Can::Sets,
             "all" => Can::All,
+            "admin" => Can::Admin,
             _ => Can::Read,
         }
     }
@@ -183,8 +206,10 @@ impl Can {
     pub fn id(&self) -> &'static str {
         match self {
             Can::Read => "read",
+            Can::Suggest => "suggest",
             Can::Sets => "sets",
             Can::All => "all",
+            Can::Admin => "admin",
         }
     }
 
@@ -192,8 +217,10 @@ impl Can {
     pub fn label(&self) -> &'static str {
         match self {
             Can::Read => "Nur lesen",
+            Can::Suggest => "Änderungen vorschlagen",
             Can::Sets => "Sets bearbeiten",
             Can::All => "Songs und Sets bearbeiten",
+            Can::Admin => "Admin: auch Vorschläge übernehmen",
         }
     }
 }
@@ -215,9 +242,22 @@ pub struct Member {
     pub until: Option<i64>,
     #[serde(default, skip_serializing_if = "Can::is_read")]
     pub can: Can,
+    /// Whether they play: asked when they can and put into sets. False for
+    /// someone who only reads along (and maybe proposes songs) — the app
+    /// leaves them out of the planning, and they write no answers.
+    #[serde(default = "plays_by_default", skip_serializing_if = "is_true")]
+    pub plays: bool,
     /// Questions to the assistant a day; None: the library's (`Assistant::daily`), 0: none.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ai: Option<u32>,
+}
+
+fn plays_by_default() -> bool {
+    true
+}
+
+fn is_true(b: &bool) -> bool {
+    *b
 }
 
 impl Member {
@@ -235,14 +275,14 @@ impl Member {
     /// that drops a song is caught where the write happens (`drops_songs`).
     pub fn may_write(&self, db: &str, key: &str, remove: bool) -> bool {
         if db == "user" && key == self.answers_key() {
-            return true;
+            return self.plays;
         }
         match (self.can, db) {
-            (Can::Read, _) => false,
+            (Can::Read | Can::Suggest, _) => false,
             (_, "user") if key.starts_with("availability.") => false,
             (Can::Sets, "user") => key == "setlists" || key == "lineups",
-            (Can::All, "user") => true,
-            (Can::All, "library") => !remove,
+            (Can::All | Can::Admin, "user") => true,
+            (Can::All | Can::Admin, "library") => !remove,
             _ => false,
         }
     }
@@ -454,6 +494,33 @@ pub struct Stats {
     pub rooms: Vec<Room>,
     /// Newest first.
     pub changes: Vec<Change>,
+    /// Proposals waiting for the owner.
+    pub proposals: usize,
+}
+
+/// One change of a proposal, as the owner looks at it before accepting.
+#[derive(Clone, Debug)]
+pub struct PendingChange {
+    pub change: ProposalChange,
+    /// A song by the title it gets, else as the record is called.
+    pub label: String,
+    /// What is there now, for a person to read (a song's text, JSON
+    /// pretty-printed); None: nothing.
+    pub before: Option<String>,
+    /// What it becomes, the same way; None: it goes.
+    pub after: Option<String>,
+    /// The record moved since the change was made on it.
+    pub stale: bool,
+}
+
+/// What accepting a proposal did.
+#[derive(Clone, Debug)]
+pub struct ProposalOutcome {
+    pub proposal: Proposal,
+    /// `db/key` of each record written.
+    pub applied: Vec<String>,
+    /// How many changes stayed open: their record moved since.
+    pub conflicts: usize,
 }
 
 impl Hub {
@@ -554,6 +621,82 @@ impl Hub {
         Some(stats_of(&shared))
     }
 
+    fn shared(&self, id: Option<&str>) -> Option<Arc<Shared>> {
+        match id {
+            None => Some(self.0.main.clone()),
+            Some(id) => Some(self.instances().get(id)?.shared.clone()),
+        }
+    }
+
+    /// The proposals of `/i/<id>` (None: the server's own), newest first.
+    pub fn proposals(&self, id: Option<&str>) -> Option<Vec<Proposal>> {
+        Some(self.shared(id)?.proposals.list())
+    }
+
+    /// One proposal, each change with what is there now.
+    pub fn proposal(
+        &self,
+        id: Option<&str>,
+        proposal: &str,
+    ) -> Option<(Proposal, Vec<PendingChange>)> {
+        let s = self.shared(id)?;
+        let p = s.proposals.get(proposal)?;
+        let changes = p
+            .changes
+            .iter()
+            .map(|c| {
+                let now = s.store.read_versioned(&c.db, &c.key);
+                PendingChange {
+                    label: proposals::label(&s, c),
+                    before: now
+                        .value
+                        .as_deref()
+                        .map(|v| proposals::readable(&c.db, &c.key, v)),
+                    after: c
+                        .value
+                        .as_deref()
+                        .map(|v| proposals::readable(&c.db, &c.key, v)),
+                    stale: c.state == ChangeState::Open && now.rev != c.base,
+                    change: c.clone(),
+                }
+            })
+            .collect();
+        Some((p, changes))
+    }
+
+    /// Writes the open changes of a proposal (`keys`: just these `db/key`),
+    /// each on the revision it was made on, or over what is there (`force`).
+    pub fn accept_proposal(
+        &self,
+        id: Option<&str>,
+        proposal: &str,
+        keys: Option<&[String]>,
+        force: bool,
+        by: Option<&str>,
+    ) -> Result<ProposalOutcome, String> {
+        let s = self.shared(id).ok_or("no such library")?;
+        let done =
+            proposals::accept(&s, proposal, keys, force, true, by, None).map_err(|r| r.message)?;
+        Ok(ProposalOutcome {
+            conflicts: done.conflicts.len(),
+            applied: done.applied,
+            proposal: done.proposal,
+        })
+    }
+
+    /// Turns an open proposal down, or removes a decided one.
+    pub fn reject_proposal(
+        &self,
+        id: Option<&str>,
+        proposal: &str,
+        by: Option<&str>,
+    ) -> Result<(), String> {
+        let s = self.shared(id).ok_or("no such library")?;
+        proposals::close(&s, proposal, ProposalStatus::Rejected, by)
+            .map(|_| ())
+            .map_err(|r| r.message)
+    }
+
     /// Who used the library under `/i/<id>` (None: the server's own) in the
     /// last `days` days.
     pub fn usage(&self, id: Option<&str>, days: u32) -> Option<UsageReport> {
@@ -643,6 +786,12 @@ fn stats_of(s: &Shared) -> Stats {
         backups: backups.len(),
         rooms,
         changes,
+        proposals: s
+            .proposals
+            .list()
+            .iter()
+            .filter(|p| p.status == ProposalStatus::Open)
+            .count(),
     }
 }
 
@@ -893,6 +1042,7 @@ fn library_state(
         store,
         backups: Backups::new(&root, backup_keep),
         journal: Journal::open(&root),
+        proposals: proposals::Proposals::new(&root),
         usage: Usage::open(&root),
         members: RwLock::new(Vec::new()),
         desk: Arc::new(assistant::Desk::open(&root)),

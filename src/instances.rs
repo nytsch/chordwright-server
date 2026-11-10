@@ -309,12 +309,14 @@ impl Registry {
 
     /// Nimmt einen Musiker auf, mit eigenem Token, für `days` Tage ab jetzt
     /// (0: bis auf Widerruf). Die id kommt aus dem Namen.
+    #[allow(clippy::too_many_arguments)]
     pub fn add_member(
         &self,
         lib: &str,
         name: &str,
         roles: &[String],
         can: Can,
+        plays: bool,
         days: u32,
         now: i64,
     ) -> Result<Member, String> {
@@ -340,6 +342,7 @@ impl Registry {
                 roles,
                 until: until(days, now),
                 can,
+                plays,
                 ai: None,
             };
             members.push(member.clone());
@@ -348,6 +351,7 @@ impl Registry {
     }
 
     /// Name und Rollen; Token und Frist bleiben.
+    #[allow(clippy::too_many_arguments)]
     pub fn edit_member(
         &self,
         lib: &str,
@@ -355,6 +359,7 @@ impl Registry {
         name: &str,
         roles: &[String],
         can: Can,
+        plays: bool,
         ai: Option<u32>,
     ) -> Result<(), String> {
         let name = clean_name(name).ok_or("Ohne Namen geht es nicht.")?;
@@ -364,6 +369,7 @@ impl Registry {
             m.name = name;
             m.roles = roles;
             m.can = can;
+            m.plays = plays;
             m.ai = ai;
             Ok(())
         })
@@ -585,6 +591,7 @@ mod tests {
                 "Niko",
                 &roles(&["S", "A", "X", "A"]),
                 Can::Read,
+                true,
                 7,
                 1_000,
             )
@@ -593,18 +600,28 @@ mod tests {
         assert_eq!(niko.roles, ["A", "S"], "known letters, once, in order");
         assert_eq!(niko.until, Some(1_000 + 7 * DAY_MS));
         let twin = registry
-            .add_member("", "Niko", &[], Can::Read, 0, 1_000)
+            .add_member("", "Niko", &[], Can::Read, true, 0, 1_000)
             .unwrap();
         assert_eq!(twin.id, "niko-2");
         assert_ne!(twin.token, niko.token);
         assert!(registry
-            .add_member("nope", "Lea", &[], Can::Read, 1, 0)
+            .add_member("nope", "Lea", &[], Can::Read, true, 1, 0)
             .is_err());
-        assert!(registry.add_member("", "  ", &[], Can::Read, 1, 0).is_err());
+        assert!(registry
+            .add_member("", "  ", &[], Can::Read, true, 1, 0)
+            .is_err());
 
         registry.extend_member("", "niko", 30, 2_000).unwrap();
         registry
-            .edit_member("", "niko", "Niko K.", &roles(&["E"]), Can::Sets, Some(5))
+            .edit_member(
+                "",
+                "niko",
+                "Niko K.",
+                &roles(&["E"]),
+                Can::Sets,
+                true,
+                Some(5),
+            )
             .unwrap();
         let now = registry.members("");
         assert_eq!(now[0].token, niko.token, "extending keeps the token");
@@ -639,7 +656,7 @@ mod tests {
         assert_eq!(registry.assistant(""), None);
 
         let lea = registry
-            .add_member(&chor.id, "Lea", &roles(&["P"]), Can::All, 0, 0)
+            .add_member(&chor.id, "Lea", &roles(&["P"]), Can::All, true, 0, 0)
             .unwrap();
         // A new library token leaves the musicians alone.
         registry.new_token(&chor.id).unwrap();
