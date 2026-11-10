@@ -309,6 +309,7 @@ impl Registry {
 
     /// Nimmt einen Musiker auf, mit eigenem Token, für `days` Tage ab jetzt
     /// (0: bis auf Widerruf). Die id kommt aus dem Namen.
+    #[allow(clippy::too_many_arguments)]
     pub fn add_member(
         &self,
         lib: &str,
@@ -350,6 +351,7 @@ impl Registry {
     }
 
     /// Name und Rollen; Token und Frist bleiben.
+    #[allow(clippy::too_many_arguments)]
     pub fn edit_member(
         &self,
         lib: &str,
