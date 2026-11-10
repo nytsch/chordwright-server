@@ -199,7 +199,7 @@ fn roster(members: &[Member]) -> Value {
     Value::Array(
         members
             .iter()
-            .map(|m| json!({ "id": m.id, "name": m.name, "roles": m.roles, "can": m.can }))
+            .map(|m| json!({ "id": m.id, "name": m.name, "roles": m.roles, "can": m.can, "plays": m.plays }))
             .collect(),
     )
 }
@@ -508,8 +508,7 @@ async fn route(s: Arc<Shared>, req: Request<Incoming>, seen: &mut Seen) -> Respo
             health["access"] = match s.access(&given) {
                 Ok(Some(Access::Owner)) => json!("owner"),
                 Ok(Some(Access::Member(m))) => {
-                    health["member"] =
-                        json!({ "id": m.id, "name": m.name, "roles": m.roles, "can": m.can });
+                    health["member"] = json!({ "id": m.id, "name": m.name, "roles": m.roles, "can": m.can, "plays": m.plays });
                     health["until"] = json!(m.until);
                     json!("member")
                 }
@@ -975,7 +974,8 @@ async fn proposals_route(
                 Ok(b) => b,
                 Err(no) => return no,
             };
-            let own = member.as_ref().map(Member::answers_key);
+            // Someone who does not play has no answers to propose either.
+            let own = member.as_ref().filter(|m| m.plays).map(Member::answers_key);
             let by = me.clone();
             match blocking(s, move |s| proposals::create(s, by, own, &body)).await {
                 Ok(p) => send(201, proposals::summary(&p)),

@@ -267,7 +267,7 @@ It is a label, not an account: whoever holds the token can write under any name.
 ## The band
 
 A library can be opened by its musicians, each with a token of their own
-(`Member { id, name, token, roles, until, can }`). A musician reads every
+(`Member { id, name, token, roles, until, can, plays }`). A musician reads every
 record, follows the change stream and plays along on the shared stage (lead
 and follow), and writes their own answers, `user/availability.<id>` — always
 under their own name in the change journal. `can` says what else:
@@ -285,17 +285,23 @@ stay the owner's. Anything not allowed is `403 { error: "read only" }`. Their ac
 which every route answers `401 { error: "expired" }`; taking them off the list
 answers `401 unauthorised`. Either way their open event streams end.
 
+`plays` (default `true`) says whether they play: asked when they can and put
+into sets. With `false` they only read along — as `can` allows, so proposing
+songs too with `suggest` — the app leaves them out of the planning, and
+`user/availability.<id>` is refused for them (`403`), also in a proposal.
+`/api/band` and `/api/health` carry it.
+
 `roles` are letters: `D` drum, `P` piano, `A` acoustic guitar, `E` electric
 guitar, `B` bass, `S` singer.
 
 ```
-GET    /api/band    → { roles: [{ id, name }], members: [{ id, name, roles, can }], me: id | null }
+GET    /api/band    → { roles: [{ id, name }], members: [{ id, name, roles, can, plays }], me: id | null }
 POST   /api/assistant → body { kind: form|length, system, messages } → { content, stop_reason, usage, quota } | 429 quota | 403 | 503 | 502 { reason }
 ```
 
 No token ever leaves the server this way. `GET /api/health` with a token says
 what it may do: `access` is `owner`, `member` (with `member: { id, name,
-roles, can }` and `until`, ms since the epoch or null), `expired` or `none`.
+roles, can, plays }` and `until`, ms since the epoch or null), `expired` or `none`.
 
 From the command line `--members <file.json>`; from Rust `Options { members, … }`
 or, while it runs, `server.hub().set_members(id, members)`. The Home Assistant

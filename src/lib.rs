@@ -242,9 +242,22 @@ pub struct Member {
     pub until: Option<i64>,
     #[serde(default, skip_serializing_if = "Can::is_read")]
     pub can: Can,
+    /// Whether they play: asked when they can and put into sets. False for
+    /// someone who only reads along (and maybe proposes songs) — the app
+    /// leaves them out of the planning, and they write no answers.
+    #[serde(default = "plays_by_default", skip_serializing_if = "is_true")]
+    pub plays: bool,
     /// Questions to the assistant a day; None: the library's (`Assistant::daily`), 0: none.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ai: Option<u32>,
+}
+
+fn plays_by_default() -> bool {
+    true
+}
+
+fn is_true(b: &bool) -> bool {
+    *b
 }
 
 impl Member {
@@ -262,7 +275,7 @@ impl Member {
     /// that drops a song is caught where the write happens (`drops_songs`).
     pub fn may_write(&self, db: &str, key: &str, remove: bool) -> bool {
         if db == "user" && key == self.answers_key() {
-            return true;
+            return self.plays;
         }
         match (self.can, db) {
             (Can::Read | Can::Suggest, _) => false,

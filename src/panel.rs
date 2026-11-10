@@ -1199,6 +1199,14 @@ impl Ui {
                 "<select name=\"can\" aria-label=\"Darf\" title=\"Sicherungen und Songs löschen bleiben bei dir\">{options}</select>"
             )
         };
+        // Ob er mitspielt: nach Terminen gefragt und in Sets eingeteilt wird.
+        // Ohne liest er nur mit (und schlägt, wenn er darf, Songs vor).
+        let plays_box = |on: bool| -> String {
+            format!(
+                "<label class=\"plays\" title=\"Wird nach Terminen gefragt und in Sets eingeteilt. Ohne Haken liest er nur mit.\"><input type=\"checkbox\" name=\"plays\" value=\"1\"{}>spielt mit</label>",
+                if on { " checked" } else { "" }
+            )
+        };
         let state = |m: &Member| match m.until {
             _ if m.expired(now) => "abgelaufen".to_string(),
             None => "bis auf Widerruf".to_string(),
@@ -1219,6 +1227,11 @@ impl Ui {
                     String::new()
                 } else {
                     format!(" · {}", m.can.label())
+                };
+                let can = if m.plays {
+                    can
+                } else {
+                    format!("{can} · nicht in der Planung")
                 };
                 let can = match m.ai {
                     Some(n) => format!("{can} · KI {n}/Tag"),
@@ -1246,9 +1259,10 @@ impl Ui {
             "<form class=\"row\" method=\"post\" action=\"./\">{csrf}<input type=\"hidden\" name=\"do\" value=\"member-add\"><input type=\"hidden\" name=\"id\" value=\"{id}\">\
              <input name=\"name\" required maxlength=\"60\" placeholder=\"Name\" aria-label=\"Name\" autocomplete=\"off\">\
              <span class=\"roles\" role=\"group\" aria-label=\"Rollen\">{}</span>\
-             {}<select name=\"days\" aria-label=\"Wie lange\">{}</select><button>Aufnehmen</button></form>",
+             {}{}<select name=\"days\" aria-label=\"Wie lange\">{}</select><button>Aufnehmen</button></form>",
             boxes(&[]),
             rights(Can::Read),
+            plays_box(true),
             choices(30)
         );
         let Some(m) = members.iter().find(|m| m.id == person) else {
@@ -1336,7 +1350,7 @@ impl Ui {
             "<section>\n  <p><b>{}</b> <span class=\"muted\">· {}</span></p>\n  \
              <form class=\"row\" method=\"post\" action=\"./\">{hidden}<input type=\"hidden\" name=\"do\" value=\"member-edit\">\
              <input name=\"name\" required maxlength=\"60\" value=\"{}\" aria-label=\"Name\">\
-             <span class=\"roles\" role=\"group\" aria-label=\"Rollen\">{}</span>{}{}<button class=\"quiet\">Speichern</button></form>\n  \
+             <span class=\"roles\" role=\"group\" aria-label=\"Rollen\">{}</span>{}{}{}<button class=\"quiet\">Speichern</button></form>\n  \
              <form class=\"row\" method=\"post\" action=\"./\">{hidden}<input type=\"hidden\" name=\"do\" value=\"member-extend\">\
              <select name=\"days\" aria-label=\"Ab jetzt für\">{}</select><button class=\"quiet\" title=\"Der Token bleibt; verbundene Geräte bleiben verbunden\">Verlängern</button></form>\n  \
              <form class=\"row\" method=\"post\" action=\"./\" onsubmit=\"return confirm('Von der Liste nehmen? Mit diesem Zugang kommt niemand mehr hinein.')\">{hidden}<input type=\"hidden\" name=\"do\" value=\"member-remove\">\
@@ -1346,6 +1360,7 @@ impl Ui {
             esc(&m.name),
             boxes(&m.roles),
             rights(m.can),
+            plays_box(m.plays),
             ai_input,
             choices(if m.until.is_none() { 0 } else { 30 })
         );
@@ -1560,6 +1575,8 @@ impl Ui {
         }
         let fail = |e: String| (id.clone(), e);
         let person = field("p");
+        // Ein nicht angehakter Kasten schickt nichts: dann spielt er nicht mit.
+        let plays = || field("plays") == "1";
         let days = || field("days").trim().parse::<u32>().unwrap_or(30).min(365);
         // Leer: keine eigene Zahl (für einen Musiker: wie für alle; für dich: ohne Grenze).
         let count = |name: &str| {
@@ -1593,6 +1610,7 @@ impl Ui {
                         &field("name"),
                         &form_fields(body, "role"),
                         Can::parse(&field("can")),
+                        plays(),
                         days(),
                         now_ms(),
                     )
@@ -1607,6 +1625,7 @@ impl Ui {
                         &field("name"),
                         &form_fields(body, "role"),
                         Can::parse(&field("can")),
+                        plays(),
                         count("ai"),
                     )
                     .map_err(fail)?;
@@ -1828,6 +1847,8 @@ const HEAD: &str = r#"<!doctype html>
   .roles { display: inline-flex; flex-wrap: wrap; gap: 6px; }
   .roles label { display: inline-flex; align-items: center; gap: 4px; min-height: 36px; padding: 0 10px; border: 1px solid var(--line); border-radius: 999px; font-weight: 600; cursor: pointer; }
   .roles input { margin: 0; flex: none; min-height: 0; padding: 0; }
+  .plays { display: inline-flex; align-items: center; gap: 6px; min-height: 36px; padding: 0 10px; border: 1px solid var(--line); border-radius: 999px; cursor: pointer; }
+  .plays input { margin: 0; flex: none; min-height: 0; padding: 0; }
   .letter { display: inline-grid; place-items: center; width: 22px; height: 22px; border: 1px solid var(--line); border-radius: 6px; font-size: 12px; font-weight: 600; }
   .who { font-weight: 600; }
   .band { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 24px; align-items: start; }
@@ -2213,7 +2234,7 @@ mod tests {
             .contains("Keine offenen Vorschläge"));
 
         let lea = registry
-            .add_member("", "Lea", &[], Can::Suggest, 0, now_ms())
+            .add_member("", "Lea", &[], Can::Suggest, true, 0, now_ms())
             .unwrap();
         let revs = http(&lea.token, "GET", "/api/library?revs=1", "")["revs"].clone();
         let made = http(
@@ -2317,6 +2338,76 @@ mod tests {
     }
 
     #[test]
+    fn someone_who_reads_along() {
+        use chordwright_server::{Options, Server};
+        let root = std::env::temp_dir().join(format!("cw-panel-plays-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let (data, share) = (root.join("data"), root.join("share"));
+        std::fs::create_dir_all(&data).unwrap();
+        let server = Server::start(Options {
+            dir: share.join("chordwright"),
+            token: "owner".into(),
+            port: 0,
+            ..Options::default()
+        })
+        .unwrap();
+        let registry = Arc::new(Registry::open(
+            &data,
+            &share,
+            "chordwright",
+            0.0,
+            3,
+            server.hub(),
+        ));
+        let ui = Ui {
+            panel: Panel {
+                addresses: Vec::new(),
+                scheme: "https".into(),
+                port: "4174".into(),
+                token: "owner".into(),
+                own_ca: false,
+                folder: "chordwright".into(),
+                samba: false,
+                public_url: None,
+            },
+            registry: registry.clone(),
+            hub: server.hub(),
+            secret: "s".into(),
+        };
+        // The box is ticked when adding someone; unticked, they only read along.
+        let page = ui.page("", "", 0, None, None, "band", 7);
+        assert!(page.contains("name=\"plays\" value=\"1\" checked"));
+        ui.act("csrf=s&id=&do=member-add&name=Ute&can=suggest&days=0")
+            .unwrap();
+        ui.act("csrf=s&id=&do=member-add&name=Niko&can=read&plays=1&days=0")
+            .unwrap();
+        let members = registry.members("");
+        let ute = members.iter().find(|m| m.name == "Ute").unwrap();
+        assert!(!ute.plays && ute.can == Can::Suggest);
+        assert!(members.iter().find(|m| m.name == "Niko").unwrap().plays);
+        assert_eq!(
+            server.hub().members(None).unwrap().len(),
+            2,
+            "the server knows at once"
+        );
+        let page = ui.page("", &ute.id, 0, None, None, "band", 7);
+        assert!(page.contains("nicht in der Planung"));
+        assert!(
+            page.contains("name=\"plays\" value=\"1\">spielt mit"),
+            "unticked when editing her"
+        );
+        // Edited back to playing.
+        ui.act(&format!(
+            "csrf=s&id=&do=member-edit&p={}&name=Ute&can=suggest&plays=1",
+            ute.id
+        ))
+        .unwrap();
+        assert!(registry.members("").iter().all(|m| m.plays));
+        drop(server);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
     fn diffs() {
         let d = diff_lines("a\nb\nc\nd\ne\nf\ng\nh", "a\nb\nc\nd\nX\nf\ng\nh");
         assert!(d.contains("⋯ 2 Zeilen gleich"), "{d}");
@@ -2371,6 +2462,7 @@ mod tests {
                     &format!("Musiker/{i}"),
                     &["P".into()],
                     Can::Read,
+                    true,
                     0,
                     now_ms(),
                 )
@@ -2550,6 +2642,7 @@ mod tests {
             until: None,
             can,
             ai: None,
+            plays: true,
         };
         let mut list = vec![
             m("zoe", Can::Read),

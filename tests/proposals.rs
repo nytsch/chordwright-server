@@ -33,6 +33,7 @@ fn member(id: &str, token: &str, can: Can) -> Member {
         roles: Vec::new(),
         until: None,
         ai: None,
+        plays: true,
         can,
     }
 }

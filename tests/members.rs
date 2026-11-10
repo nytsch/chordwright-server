@@ -39,6 +39,7 @@ fn member(id: &str, name: &str, token: &str, roles: &[&str], until: Option<i64>)
         roles: roles.iter().map(|r| r.to_string()).collect(),
         until,
         ai: None,
+        plays: true,
         can: Default::default(),
     }
 }
@@ -146,7 +147,7 @@ fn musicians_read_play_along_and_write_only_their_answers() {
     assert!(band.contains("\"me\":\"lea\""), "{band}");
     assert!(
         band.contains(
-            "{\"id\":\"niko\",\"name\":\"Niko\",\"roles\":[\"A\",\"S\"],\"can\":\"read\"}"
+            "{\"id\":\"niko\",\"name\":\"Niko\",\"roles\":[\"A\",\"S\"],\"can\":\"read\",\"plays\":true}"
         ),
         "{band}"
     );
@@ -348,6 +349,78 @@ fn what_a_musician_may_change_beyond_their_answers() {
         "{band}"
     );
 
+    drop(server);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn someone_who_only_reads_along_is_not_planned() {
+    let dir = std::env::temp_dir().join(format!("cw-members-plays-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let reader = Member {
+        plays: false,
+        can: Can::Suggest,
+        ..member("ute", "Ute", "ute-token", &[], None)
+    };
+    let server = Server::start(Options {
+        dir: dir.join("main"),
+        token: "owner".into(),
+        members: vec![reader, member("niko", "Niko", "niko-token", &["A"], None)],
+        port: 0,
+        ..Options::default()
+    })
+    .unwrap();
+    let port = server.ready().port;
+
+    // The app learns who plays: from /api/band and from /api/health.
+    let band = request(port, "ute-token", "GET", "/api/band", "");
+    assert!(
+        band.contains("\"id\":\"ute\"") && band.contains("\"plays\":false"),
+        "{band}"
+    );
+    assert!(band.contains("\"id\":\"niko\""));
+    let health = request(port, "ute-token", "GET", "/api/health", "");
+    assert!(health.contains("\"plays\":false"), "{health}");
+    let health = request(port, "niko-token", "GET", "/api/health", "");
+    assert!(health.contains("\"plays\":true"), "{health}");
+
+    // She reads, but has no answers to give — directly or as a proposal.
+    let read = request(port, "ute-token", "GET", "/api/library", "");
+    assert_eq!(status(&read), "200");
+    let answer = request(
+        port,
+        "ute-token",
+        "PUT",
+        "/api/user/record/availability.ute",
+        "{}",
+    );
+    assert_eq!(status(&answer), "403", "{answer}");
+    let proposal = request(
+        port,
+        "ute-token",
+        "POST",
+        "/api/proposals",
+        "{\"changes\":[{\"db\":\"user\",\"key\":\"availability.ute\",\"value\":\"{}\"}]}",
+    );
+    assert_eq!(status(&proposal), "403", "{proposal}");
+    // A new song she may propose.
+    let proposal = request(
+        port,
+        "ute-token",
+        "POST",
+        "/api/proposals",
+        "{\"changes\":[{\"db\":\"library\",\"key\":\"doc.neu\",\"value\":\"{\\\"v\\\":1,\\\"data\\\":{\\\"text\\\":\\\"{title: Neu}\\\"}}\"}]}",
+    );
+    assert_eq!(status(&proposal), "201", "{proposal}");
+    // Who plays still answers.
+    let answer = request(
+        port,
+        "niko-token",
+        "PUT",
+        "/api/user/record/availability.niko",
+        "{}",
+    );
+    assert_eq!(status(&answer), "204", "{answer}");
     drop(server);
     let _ = std::fs::remove_dir_all(&dir);
 }
