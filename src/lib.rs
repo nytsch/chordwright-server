@@ -170,10 +170,13 @@ pub enum Can {
     Sets,
     /// Also songs, their arrangements, and the rest of the user database.
     All,
+    /// As `All`, and takes or turns down what others propose — all of it but
+    /// removing songs, which stays open for the owner.
+    Admin,
 }
 
 impl Can {
-    pub const ALL: [Can; 4] = [Can::Read, Can::Suggest, Can::Sets, Can::All];
+    pub const ALL: [Can; 5] = [Can::Read, Can::Suggest, Can::Sets, Can::All, Can::Admin];
 
     pub fn is_read(&self) -> bool {
         *self == Can::Read
@@ -184,12 +187,18 @@ impl Can {
         *self != Can::Read
     }
 
+    /// Whether they see everyone's proposals and take or turn them down.
+    pub fn may_review(&self) -> bool {
+        *self == Can::Admin
+    }
+
     /// As a form sends it (`read`, `suggest`, `sets`, `all`); anything else reads only.
     pub fn parse(text: &str) -> Can {
         match text {
             "suggest" => Can::Suggest,
             "sets" => Can::Sets,
             "all" => Can::All,
+            "admin" => Can::Admin,
             _ => Can::Read,
         }
     }
@@ -200,6 +209,7 @@ impl Can {
             Can::Suggest => "suggest",
             Can::Sets => "sets",
             Can::All => "all",
+            Can::Admin => "admin",
         }
     }
 
@@ -210,6 +220,7 @@ impl Can {
             Can::Suggest => "Änderungen vorschlagen",
             Can::Sets => "Sets bearbeiten",
             Can::All => "Songs und Sets bearbeiten",
+            Can::Admin => "Admin: auch Vorschläge übernehmen",
         }
     }
 }
@@ -257,8 +268,8 @@ impl Member {
             (Can::Read | Can::Suggest, _) => false,
             (_, "user") if key.starts_with("availability.") => false,
             (Can::Sets, "user") => key == "setlists" || key == "lineups",
-            (Can::All, "user") => true,
-            (Can::All, "library") => !remove,
+            (Can::All | Can::Admin, "user") => true,
+            (Can::All | Can::Admin, "library") => !remove,
             _ => false,
         }
     }
@@ -651,7 +662,8 @@ impl Hub {
         by: Option<&str>,
     ) -> Result<ProposalOutcome, String> {
         let s = self.shared(id).ok_or("no such library")?;
-        let done = proposals::accept(&s, proposal, keys, force, by, None).map_err(|r| r.message)?;
+        let done =
+            proposals::accept(&s, proposal, keys, force, true, by, None).map_err(|r| r.message)?;
         Ok(ProposalOutcome {
             conflicts: done.conflicts.len(),
             applied: done.applied,

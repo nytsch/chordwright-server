@@ -278,6 +278,7 @@ under their own name in the change journal. `can` says what else:
 | `suggest` | nothing directly — changes to anything as [proposals](#proposals) the owner accepts |
 | `sets` | `user/setlists`, `user/lineups` |
 | `all` | every `user` record, and `library` records — but no `DELETE` there, and no `library/index` that leaves out a song it had (by `chordProId`) |
+| `admin` | as `all`, and sees, accepts and rejects everyone's [proposals](#proposals) — except a change that removes a song, which stays open for the owner |
 
 Another musician's answers, deleting songs and anything under `/api/backups`
 stay the owner's. Anything not allowed is `403 { error: "read only" }`. Their access can end at a given time, after
@@ -305,7 +306,7 @@ add-on keeps them per library, edited in its web UI, across restarts.
 For someone who wants to work on the library but may not write it: they
 mirror it (`GET /api/:db?revs=1`, values and revisions), change their copy
 wherever they like, and send back what they changed as one proposal. Nothing
-of it reaches `library/` or `user/` until the owner accepts it. Every musician
+of it reaches `library/` or `user/` until the owner (or an `admin`) accepts it. Every musician
 whose `can` is more than `read` may propose, so one with `all` can also
 propose what they may not do themselves, removing a song for example.
 
@@ -313,7 +314,7 @@ propose what they may not do themselves, removing a song for example.
 GET    /api/proposals             → { proposals: [{ id, title, note, by: { id, name }, createdAt, status, decidedAt, decidedBy, open, changes: [{ db, key, base, remove, state }] }] }
 POST   /api/proposals             ← { title?, note?, changes: [{ db, key, base, value }] }  → 201 the proposal | 400 | 403 | 429
 GET    /api/proposals/:id         → the proposal, each change with `value`, `label`, `current` (its revision now) and `stale`
-POST   /api/proposals/:id/accept  ← { keys?: ["db/key", …], force? }  → { proposal, applied: ["db/key"], conflicts: [{ db, key, base, value, rev }] }
+POST   /api/proposals/:id/accept  ← { keys?: ["db/key", …], force? }  → { proposal, applied: ["db/key"], conflicts: [{ db, key, base, value, rev }], held: ["db/key"] }
 DELETE /api/proposals/:id                                            → 204   (open: rejected, or withdrawn by its author; decided: gone)
 ```
 
@@ -328,8 +329,10 @@ DELETE /api/proposals/:id                                            → 204   (
   there now, for the owner's app to merge, to take anyway (`force: true`), or
   to leave by rejecting the rest. Once nothing is open the proposal is
   `accepted`. `keys` accepts just those changes.
-- **Who sees what:** the owner every proposal, a musician their own. Only the
-  owner accepts or rejects. `status` is `open`, `accepted`, `rejected` or
+- **Who sees what:** the owner and an `admin` every proposal, any other
+  musician their own. Only they accept or reject. An admin does not remove
+  songs this way either: a change that deletes a song's file or writes a song
+  index that leaves one out stays open (`held`) for the owner. `status` is `open`, `accepted`, `rejected` or
   `withdrawn`; the newest 50 decided ones stay.
 - **Kept in `.chordwright/proposals/<id>.json`**, outside the library: the
   watcher does not see them and no backup carries them. At most 20 open per

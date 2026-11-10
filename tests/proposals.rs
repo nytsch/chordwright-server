@@ -254,3 +254,117 @@ fn proposals_wait_for_the_owner_and_land_on_their_base() {
     drop(server);
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+#[test]
+fn an_admin_takes_proposals_but_leaves_removing_songs_to_the_owner() {
+    let dir = std::env::temp_dir().join(format!("cw-proposals-admin-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let server = Server::start(Options {
+        dir: dir.clone(),
+        token: "owner".into(),
+        members: vec![
+            member("lea", "lea-token", Can::Suggest),
+            member("max", "max-token", Can::Admin),
+            member("ali", "ali-token", Can::All),
+        ],
+        port: 0,
+        ..Options::default()
+    })
+    .unwrap();
+    let port = server.ready().port;
+    let req = |token: &str, method: &str, path: &str, body: &str| {
+        request(port, token, method, path, body)
+    };
+    let index = |ids: &[&str]| {
+        let songs: Vec<Value> = ids
+            .iter()
+            .map(|id| json!({ "id": id, "chordProId": id }))
+            .collect();
+        json!({ "v": 1, "data": songs }).to_string()
+    };
+    for (key, value) in [
+        ("doc.a", song("{title: A}")),
+        ("doc.b", song("{title: B}")),
+        ("index", index(&["a", "b"])),
+    ] {
+        let (status, _) = req(
+            "owner",
+            "PUT",
+            &format!("/api/library/record/{key}"),
+            &value,
+        );
+        assert_eq!(status, "204");
+    }
+    let (_, health) = req("max-token", "GET", "/api/health", "");
+    assert_eq!(health["member"]["can"], "admin");
+    // An admin writes like `all`, but deletes no song directly either.
+    let (status, _) = req("max-token", "DELETE", "/api/library/record/doc.b", "");
+    assert_eq!(status, "403");
+
+    let (_, mirror) = req("lea-token", "GET", "/api/library?revs=1", "");
+    let rev = |key: &str| mirror["revs"][key].as_str().unwrap().to_string();
+    let (status, made) = req(
+        "lea-token",
+        "POST",
+        "/api/proposals",
+        &json!({ "title": "A neu, B weg", "changes": [
+            { "db": "library", "key": "doc.a", "base": rev("doc.a"), "value": song("{title: A}\n[D]neu") },
+            { "db": "library", "key": "doc.b", "base": rev("doc.b"), "value": null },
+            { "db": "library", "key": "index", "base": rev("index"), "value": index(&["a"]) },
+        ] })
+        .to_string(),
+    );
+    assert_eq!(status, "201", "{made}");
+    let id = made["id"].as_str().unwrap().to_string();
+
+    // The admin sees everyone's; one with `all` only their own.
+    let (_, seen) = req("max-token", "GET", "/api/proposals", "");
+    assert_eq!(seen["proposals"][0]["id"], id.as_str());
+    let (_, seen) = req("ali-token", "GET", "/api/proposals", "");
+    assert_eq!(seen["proposals"], json!([]));
+    let accept = format!("/api/proposals/{id}/accept");
+    let (status, _) = req("ali-token", "POST", &accept, "{}");
+    assert_eq!(status, "404");
+
+    // The admin takes the new text; removing B (file and index) stays open.
+    let (status, done) = req("max-token", "POST", &accept, "{\"force\":true}");
+    assert_eq!(status, "200", "{done}");
+    assert_eq!(done["applied"], json!(["library/doc.a"]));
+    assert_eq!(done["held"], json!(["library/doc.b", "library/index"]));
+    assert_eq!(done["proposal"]["status"], "open");
+    let (_, b) = req("owner", "GET", "/api/library/record/doc.b", "");
+    assert!(b["value"].is_string(), "B is still there");
+
+    // The owner takes the rest.
+    let (status, done) = req("owner", "POST", &accept, "{}");
+    assert_eq!(status, "200", "{done}");
+    assert_eq!(done["applied"], json!(["library/doc.b", "library/index"]));
+    assert_eq!(done["proposal"]["status"], "accepted");
+    let (status, _) = req("owner", "GET", "/api/library/record/doc.b", "");
+    assert_eq!(status, "404");
+
+    // An admin turns one down too.
+    let (_, other) = req(
+        "lea-token",
+        "POST",
+        "/api/proposals",
+        &json!({ "changes": [{ "db": "library", "key": "doc.c", "value": song("{title: C}") }] })
+            .to_string(),
+    );
+    let other = other["id"].as_str().unwrap();
+    let (status, _) = req(
+        "max-token",
+        "DELETE",
+        &format!("/api/proposals/{other}"),
+        "",
+    );
+    assert_eq!(status, "204");
+    let (_, list) = req("lea-token", "GET", "/api/proposals", "");
+    assert!(list["proposals"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|p| p["id"] == other && p["status"] == "rejected"));
+    drop(server);
+    let _ = std::fs::remove_dir_all(&dir);
+}

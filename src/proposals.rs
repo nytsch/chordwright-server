@@ -390,16 +390,36 @@ pub struct Accepted {
     /// Changes whose record moved since their base: `{ db, key, base, value, rev }`
     /// with `value`/`rev` what is there now.
     pub conflicts: Vec<Value>,
+    /// `db/key` of changes left open because only the owner removes songs.
+    pub held: Vec<String>,
+}
+
+/// Whether a change takes a song out of the library: removes its file, or
+/// writes a song index that leaves it out. That stays the owner's.
+fn removes_song(s: &Shared, c: &Change) -> bool {
+    if c.db != "library" {
+        return false;
+    }
+    match &c.value {
+        None => c.key.starts_with("doc.") || c.key == "index",
+        Some(new) if c.key == "index" => {
+            let old = s.store.read_versioned("library", "index").value;
+            crate::drops_songs(old.as_deref().unwrap_or_default(), new)
+        }
+        Some(_) => false,
+    }
 }
 
 /// Writes the open changes of a proposal (`only`: just these `db/key`), each
 /// on its base — or over whatever is there, with `force`. The proposal is
-/// accepted once nothing of it is open.
+/// accepted once nothing of it is open. Without `may_remove` (an admin, not
+/// the owner) a change that removes a song stays open (`held`).
 pub fn accept(
     s: &Shared,
     id: &str,
     only: Option<&[String]>,
     force: bool,
+    may_remove: bool,
     decided_by: Option<&str>,
     client: Option<&str>,
 ) -> Result<Accepted, Refused> {
@@ -413,9 +433,14 @@ pub fn accept(
     let by = p.by.name.clone();
     let mut applied = Vec::new();
     let mut conflicts = Vec::new();
+    let mut held = Vec::new();
     let titles = std::cell::OnceCell::new();
     for c in p.changes.iter_mut() {
         if c.state != State::Open || only.is_some_and(|o| !o.contains(&c.id())) {
+            continue;
+        }
+        if !may_remove && removes_song(s, c) {
+            held.push(c.id());
             continue;
         }
         let expect = if force {
@@ -502,6 +527,7 @@ pub fn accept(
         proposal: p,
         applied,
         conflicts,
+        held,
     })
 }
 

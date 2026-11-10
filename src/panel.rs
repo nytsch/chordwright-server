@@ -128,15 +128,16 @@ pub fn order_addresses(addresses: &[String]) -> Vec<String> {
     out
 }
 
-/// Die Musiker in der Liste: wer mehr darf, steht oben (Songs und Sets, dann
+/// Die Musiker in der Liste: wer mehr darf, steht oben (Admin, Songs und Sets, dann
 /// Sets, dann wer vorschlagen darf, dann nur lesen), innerhalb gleicher
 /// Rechte nach Namen, ohne auf Groß- und Kleinschreibung zu achten.
 pub fn order_members(members: &mut [Member]) {
     let rank = |c: Can| match c {
-        Can::All => 0,
-        Can::Sets => 1,
-        Can::Suggest => 2,
-        Can::Read => 3,
+        Can::Admin => 0,
+        Can::All => 1,
+        Can::Sets => 2,
+        Can::Suggest => 3,
+        Can::Read => 4,
     };
     members.sort_by(|a, b| {
         rank(a.can)

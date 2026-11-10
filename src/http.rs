@@ -940,7 +940,9 @@ async fn proposals_route(
         },
     };
     let refused = |r: proposals::Refused| error(r.status, &r.message);
-    let mine = |p: &proposals::Proposal| member.is_none() || p.by.id == me.id;
+    // The owner and an admin decide; everyone else sees their own.
+    let reviews = member.as_ref().is_none_or(|m| m.can.may_review());
+    let mine = |p: &proposals::Proposal| reviews || p.by.id == me.id;
     let read_body = |req: Request<Incoming>| async move {
         let limited = http_body_util::Limited::new(req.into_body(), 16 << 20);
         match limited.collect().await {
@@ -1011,7 +1013,7 @@ async fn proposals_route(
                     }
                 }
                 (2, Method::POST) => {
-                    if member.is_some() {
+                    if !reviews {
                         return error(403, "read only");
                     }
                     let body = match read_body(req).await {
@@ -1029,12 +1031,15 @@ async fn proposals_route(
                         Some(_) => return error(400, "keys: a list of db/key"),
                     };
                     let (by, c) = (me.name.clone(), client.clone());
+                    // Removing songs stays the owner's, also by way of a proposal.
+                    let may_remove = member.is_none();
                     let result = blocking(s, move |s| {
                         proposals::accept(
                             s,
                             &id,
                             only.as_deref(),
                             force,
+                            may_remove,
                             by.as_deref(),
                             c.as_deref(),
                         )
@@ -1047,6 +1052,7 @@ async fn proposals_route(
                                 "proposal": proposals::summary(&done.proposal),
                                 "applied": done.applied,
                                 "conflicts": done.conflicts,
+                                "held": done.held,
                             }),
                         ),
                         Err(r) => refused(r),
