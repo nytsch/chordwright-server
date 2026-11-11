@@ -34,6 +34,10 @@
 //!   GET    /api/proposals/:id      → the proposal with its values, and what is there now
 //!   POST   /api/proposals/:id/accept → body { keys?, force? } → { proposal, applied, conflicts }
 //!   DELETE /api/proposals/:id      → reject (owner) or withdraw (author); a decided one goes
+//!   GET    /api/messages           → { messages: [...] }, newest first — what was sent to or by the caller
+//!   POST   /api/messages           → body { text, to?, kind? } → 201; `to` a musician, `all` or `leaders`
+//!   POST   /api/messages/:id/read  → the caller has read it
+//!   DELETE /api/messages/:id       → its sender or the owner removes it
 //!   GET    /api/band               → { roles, members: [{ id, name, roles }], me }
 //!   POST   /api/assistant          → the AI assistant, with the library's key (assistant.rs)
 //!
@@ -68,6 +72,7 @@ use tokio::sync::mpsc;
 use crate::assistant::{self, Asker, Desk};
 use crate::backups::Backups;
 use crate::journal::{Journal, Written};
+use crate::messages::{self, Messages};
 use crate::pairing::{Attempt, Pairing};
 use crate::proposals::{self, Author, Proposals, Status};
 use crate::site::{self, Site};
@@ -160,6 +165,8 @@ pub struct Shared {
     pub journal: Journal,
     /// Changes waiting for the owner to accept them (proposals.rs).
     pub proposals: Proposals,
+    /// Messages between the band and those who lead it (messages.rs).
+    pub messages: Messages,
     /// Who used the library, and how much (usage.rs).
     pub usage: Usage,
     pub stage: Stage,
@@ -413,8 +420,8 @@ fn kind_of(part: Option<&str>, method: &Method) -> &'static str {
         Some("stage") => "stage",
         Some("assistant") => "assistant",
         Some("backups") => "backups",
-        Some("proposals") if method == Method::GET => "read",
-        Some("proposals") => "write",
+        Some("proposals" | "messages") if method == Method::GET => "read",
+        Some("proposals" | "messages") => "write",
         Some("band" | "changes") => "read",
         _ if method == Method::GET || method == Method::HEAD => "read",
         _ => "write",
@@ -497,6 +504,7 @@ async fn route(s: Arc<Shared>, req: Request<Incoming>, seen: &mut Seen) -> Respo
                 "stage": true,
                 "pairing": s.pairing.is_some(),
                 "proposals": true,
+                "messages": true,
                 "assistant": s.desk.config().is_some(),
         });
         // With a token, what it may do — so a musician's app knows who it is
@@ -585,6 +593,7 @@ async fn route(s: Arc<Shared>, req: Request<Incoming>, seen: &mut Seen) -> Respo
         }
         Some("assistant") => return error(405, "method not allowed"),
         Some("proposals") => return proposals_route(&s, req, &parts[2..], &access).await,
+        Some("messages") => return messages_route(&s, req, &parts[2..], &access).await,
         Some("backups") if access.member().is_some() => return read_only(),
         Some("backups") => return backups(&s, req, &parts[2..]).await,
         Some("changes") if parts.len() == 2 && method == Method::GET => {
@@ -1061,6 +1070,64 @@ async fn proposals_route(
                 _ => error(405, "method not allowed"),
             }
         }
+        _ => error(404, "not found"),
+    }
+}
+
+async fn messages_route(
+    s: &Arc<Shared>,
+    req: Request<Incoming>,
+    rest: &[String],
+    access: &Access,
+) -> Response<Body> {
+    let method = req.method().clone();
+    // A musician under their own name, whatever the app sends.
+    let who = match access.member() {
+        Some(m) => messages::Reader {
+            id: m.id.clone(),
+            name: Some(m.name.clone()),
+            owner: false,
+            leads: m.can.leads(),
+        },
+        None => messages::Reader {
+            id: "owner".into(),
+            name: user_of(req.headers()),
+            owner: true,
+            leads: true,
+        },
+    };
+    let done = |r: Result<Value, proposals::Refused>, ok: u16| match r {
+        Ok(body) => send(ok, body),
+        Err(r) => error(r.status, &r.message),
+    };
+    let id = rest.first().and_then(|id| decode_component(id));
+    match (rest.len(), rest.get(1).map(String::as_str), id) {
+        (0, _, _) if method == Method::GET => {
+            let list = blocking(s, move |s| messages::list(s, &who)).await;
+            send(200, json!({ "messages": list }))
+        }
+        (0, _, _) if method == Method::POST => {
+            let limited = http_body_util::Limited::new(req.into_body(), 64 << 10);
+            let body = match limited.collect().await {
+                Ok(b) => serde_json::from_slice::<Value>(&b.to_bytes()).unwrap_or(Value::Null),
+                Err(_) => return error(413, "too large"),
+            };
+            done(
+                blocking(s, move |s| messages::create(s, &who, &body)).await,
+                201,
+            )
+        }
+        (2, Some("read"), Some(id)) if method == Method::POST => done(
+            blocking(s, move |s| messages::mark_read(s, &who, &id)).await,
+            200,
+        ),
+        (1, _, Some(id)) if method == Method::DELETE => {
+            match blocking(s, move |s| messages::remove(s, &who, &id)).await {
+                Ok(()) => respond(204, None, &[]),
+                Err(r) => error(r.status, &r.message),
+            }
+        }
+        (0 | 1, _, _) | (2, Some("read"), _) => error(405, "method not allowed"),
         _ => error(404, "not found"),
     }
 }
