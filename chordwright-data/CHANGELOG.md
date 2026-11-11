@@ -1,5 +1,10 @@
 # Changelog
 
+## 2.8.0
+
+- Nachrichten: Ein Musiker kann der Leitung etwas melden, zum Beispiel einen Fehler in einem Song. Die Leitung, also du und jeder Musiker, der **Sets bearbeiten** darf oder mehr, schreibt einem Musiker oder allen, zum Beispiel „Du wurdest einem Termin zugeteilt“. Wer eine Nachricht bekommen hat, bestätigt, dass er sie gelesen hat; der Absender sieht, wer wann.
+- Für die App: `GET`/`POST /api/messages`, `POST /api/messages/:id/read`, `DELETE /api/messages/:id`; `/api/health` sagt `messages: true`, und über `/api/events` kommt `event: message`. Die Nachrichten liegen in `.chordwright/messages.json` und gehen in keine Sicherung. Die Web-UI zeigt sie nicht.
+
 ## 2.7.0
 
 - Änderungen vorschlagen: Ein Musiker kann neu **Änderungen vorschlagen** dürfen (in der Web-UI unter **Band** einstellbar). Er liest wie bisher alles, schreibt aber nichts direkt. Was er in seiner Kopie der Bibliothek ändert, schickt er als Vorschlag zurück, und erst wenn du ihn annimmst, steht es in der Bibliothek. Jeder Musiker, der mehr als nur lesen darf, kann so auch vorschlagen, was er selbst nicht darf, zum Beispiel einen Song löschen.

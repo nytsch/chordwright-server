@@ -351,6 +351,36 @@ DELETE /api/proposals/:id                                            → 204   (
   counts the open ones. The Home Assistant add-on's web UI lists them under
   *Vorschläge*, with a line diff per change, to accept or reject.
 
+## Messages
+
+Short messages between the band and those who lead it: a musician reports a
+mistake, a leader tells someone they were put into a set, and whoever got one
+confirms that they read it. Nothing is sent by the server itself; the app
+writes them.
+
+```
+GET    /api/messages           → { messages: [{ id, kind, text, from: { id, name }, to, createdAt, read, readBy?: [{ id, name, at }] }] }, newest first
+POST   /api/messages           ← { text, to?, kind? }  → 201 the message | 400 | 403
+POST   /api/messages/:id/read                          → the message, read by the caller
+DELETE /api/messages/:id                               → 204   (its sender, or the owner)
+```
+
+- **`to`** is a musician's id, `all`, or `leaders` (the default): the owner
+  and every musician whose `can` is `sets`, `all` or `admin`. A musician who
+  does not lead writes to the leaders only (`403` otherwise).
+- **`kind`** is a short lowercase word for the app to show it by (`note` by
+  default; `bug`, `assigned`, … as the app likes). `text` is at most 2000
+  characters.
+- **Who sees what:** everyone what they sent and what went to them, the
+  leaders also what went to `leaders`, the owner everything.
+- **Read:** `read` says whether the caller has read it (their own: always).
+  `readBy` — who read it and when — comes only for its sender and the leaders.
+  All devices with the library's token are one reader, `owner`.
+- **Kept in `.chordwright/messages.json`**, outside the library like the
+  proposals; the newest 100 per sender stay.
+- **On `/api/events`** as `event: message` with `{ id, removed }`, on a new
+  one, a read and a removal. `/api/health` says `messages: true`.
+
 ## Backups
 
 `backups/` holds snapshots of `library/` and `user/` as plain folders, so one

@@ -245,6 +245,21 @@ pub fn js_trim(s: &str) -> &str {
     s.trim_matches(|c: char| c.is_whitespace() || c == '\u{feff}')
 }
 
+/// `<prefix><yyyymmdd>-<hhmmss>-<4 hex>`: sorts by time, one path segment.
+pub fn new_id(prefix: char) -> String {
+    use ring::rand::SecureRandom;
+    let stamp: String = iso(now_ms())
+        .chars()
+        .filter(char::is_ascii_digit)
+        .take(14)
+        .collect();
+    let mut nonce = [0u8; 2];
+    ring::rand::SystemRandom::new()
+        .fill(&mut nonce)
+        .expect("system randomness");
+    format!("{prefix}{}-{}-{}", &stamp[..8], &stamp[8..], hex(&nonce))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

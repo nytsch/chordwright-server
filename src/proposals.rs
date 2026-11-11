@@ -22,14 +22,13 @@ use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, MutexGuard};
 
-use ring::rand::{SecureRandom, SystemRandom};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
 use crate::http::Shared;
 use crate::journal::Written;
 use crate::store::{is_database, is_valid_key, song_text, song_title, Expect, Outcome};
-use crate::util::{hex, iso, now_ms, parse_iso, pretty, write_atomic};
+use crate::util::{iso, now_ms, parse_iso, pretty, write_atomic};
 
 const DIR: &str = ".chordwright/proposals";
 /// Records in one proposal: a whole library of a band is a few hundred.
@@ -125,19 +124,10 @@ pub fn is_valid_id(id: &str) -> bool {
 }
 
 fn new_id() -> String {
-    let stamp: String = iso(now_ms())
-        .chars()
-        .filter(char::is_ascii_digit)
-        .take(14)
-        .collect();
-    let mut nonce = [0u8; 2];
-    SystemRandom::new()
-        .fill(&mut nonce)
-        .expect("system randomness");
-    format!("p{}-{}-{}", &stamp[..8], &stamp[8..], hex(&nonce))
+    crate::util::new_id('p')
 }
 
-fn clip(text: &str, max: usize) -> String {
+pub(crate) fn clip(text: &str, max: usize) -> String {
     let clean: String = text
         .chars()
         .filter(|c| *c == '\n' || !c.is_control())

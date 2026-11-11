@@ -40,6 +40,7 @@ pub use site::{Files, Site};
 mod describe;
 mod http;
 mod journal;
+mod messages;
 mod pairing;
 mod proposals;
 mod site;
@@ -185,6 +186,12 @@ impl Can {
     /// Whether they may send proposals: everyone who may do more than read.
     pub fn may_propose(&self) -> bool {
         *self != Can::Read
+    }
+
+    /// Whether they lead: put musicians into sets, so they get what the band
+    /// reports and write to anyone (messages.rs).
+    pub fn leads(&self) -> bool {
+        matches!(self, Can::Sets | Can::All | Can::Admin)
     }
 
     /// Whether they see everyone's proposals and take or turn them down.
@@ -1043,6 +1050,7 @@ fn library_state(
         backups: Backups::new(&root, backup_keep),
         journal: Journal::open(&root),
         proposals: proposals::Proposals::new(&root),
+        messages: messages::Messages::new(&root),
         usage: Usage::open(&root),
         members: RwLock::new(Vec::new()),
         desk: Arc::new(assistant::Desk::open(&root)),
