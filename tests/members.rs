@@ -39,6 +39,7 @@ fn member(id: &str, name: &str, token: &str, roles: &[&str], until: Option<i64>)
         roles: roles.iter().map(|r| r.to_string()).collect(),
         until,
         ai: None,
+        voice: None,
         plays: true,
         can: Default::default(),
     }
@@ -147,7 +148,7 @@ fn musicians_read_play_along_and_write_only_their_answers() {
     assert!(band.contains("\"me\":\"lea\""), "{band}");
     assert!(
         band.contains(
-            "{\"id\":\"niko\",\"name\":\"Niko\",\"roles\":[\"A\",\"S\"],\"can\":\"read\",\"plays\":true}"
+            "{\"id\":\"niko\",\"name\":\"Niko\",\"roles\":[\"A\",\"S\"],\"can\":\"read\",\"plays\":true,\"voice\":null}"
         ),
         "{band}"
     );

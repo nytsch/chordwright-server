@@ -19,7 +19,7 @@ use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use chordwright_server::{
-    Can, ChangeState, Hub, Member, ProposalStatus, Stats, ROLES, USAGE_KINDS,
+    Can, ChangeState, Hub, Member, ProposalStatus, Stats, Voice, ROLES, USAGE_KINDS,
 };
 use qrcodegen::{QrCode, QrCodeEcc};
 
@@ -1207,6 +1207,21 @@ impl Ui {
                 if on { " checked" } else { "" }
             )
         };
+        // Die Stimme eines Sängers: danach fragt die App, wer die Hauptstimme
+        // singt, und schlägt eine Tonart vor.
+        let voice_pick = |on: Option<Voice>| -> String {
+            let none = if on.is_none() { " selected" } else { "" };
+            let options: String = [Voice::Low, Voice::High]
+                .iter()
+                .map(|v| {
+                    let sel = if on == Some(*v) { " selected" } else { "" };
+                    format!("<option value=\"{}\"{sel}>{}</option>", v.id(), v.label())
+                })
+                .collect();
+            format!(
+                "<select name=\"voice\" aria-label=\"Stimme\" title=\"Für Sänger: die App fragt, wer die Hauptstimme singt, und schlägt eine Tonart vor\"><option value=\"\"{none}>Stimme –</option>{options}</select>"
+            )
+        };
         let state = |m: &Member| match m.until {
             _ if m.expired(now) => "abgelaufen".to_string(),
             None => "bis auf Widerruf".to_string(),
@@ -1259,10 +1274,11 @@ impl Ui {
             "<form class=\"row\" method=\"post\" action=\"./\">{csrf}<input type=\"hidden\" name=\"do\" value=\"member-add\"><input type=\"hidden\" name=\"id\" value=\"{id}\">\
              <input name=\"name\" required maxlength=\"60\" placeholder=\"Name\" aria-label=\"Name\" autocomplete=\"off\">\
              <span class=\"roles\" role=\"group\" aria-label=\"Rollen\">{}</span>\
-             {}{}<select name=\"days\" aria-label=\"Wie lange\">{}</select><button>Aufnehmen</button></form>",
+             {}{}{}<select name=\"days\" aria-label=\"Wie lange\">{}</select><button>Aufnehmen</button></form>",
             boxes(&[]),
             rights(Can::Read),
             plays_box(true),
+            voice_pick(None),
             choices(30)
         );
         let Some(m) = members.iter().find(|m| m.id == person) else {
@@ -1350,7 +1366,7 @@ impl Ui {
             "<section>\n  <p><b>{}</b> <span class=\"muted\">· {}</span></p>\n  \
              <form class=\"row\" method=\"post\" action=\"./\">{hidden}<input type=\"hidden\" name=\"do\" value=\"member-edit\">\
              <input name=\"name\" required maxlength=\"60\" value=\"{}\" aria-label=\"Name\">\
-             <span class=\"roles\" role=\"group\" aria-label=\"Rollen\">{}</span>{}{}{}<button class=\"quiet\">Speichern</button></form>\n  \
+             <span class=\"roles\" role=\"group\" aria-label=\"Rollen\">{}</span>{}{}{}{}<button class=\"quiet\">Speichern</button></form>\n  \
              <form class=\"row\" method=\"post\" action=\"./\">{hidden}<input type=\"hidden\" name=\"do\" value=\"member-extend\">\
              <select name=\"days\" aria-label=\"Ab jetzt für\">{}</select><button class=\"quiet\" title=\"Der Token bleibt; verbundene Geräte bleiben verbunden\">Verlängern</button></form>\n  \
              <form class=\"row\" method=\"post\" action=\"./\" onsubmit=\"return confirm('Von der Liste nehmen? Mit diesem Zugang kommt niemand mehr hinein.')\">{hidden}<input type=\"hidden\" name=\"do\" value=\"member-remove\">\
@@ -1361,6 +1377,7 @@ impl Ui {
             boxes(&m.roles),
             rights(m.can),
             plays_box(m.plays),
+            voice_pick(m.voice),
             ai_input,
             choices(if m.until.is_none() { 0 } else { 30 })
         );
@@ -1615,6 +1632,9 @@ impl Ui {
                         now_ms(),
                     )
                     .map_err(fail)?;
+                self.registry
+                    .set_member_voice(&id, &m.id, Voice::parse(&field("voice")))
+                    .map_err(fail)?;
                 Ok(format!("?i={id}&p={}&m=member&to=band", m.id))
             }
             "member-edit" => {
@@ -1628,6 +1648,9 @@ impl Ui {
                         plays(),
                         count("ai"),
                     )
+                    .map_err(fail)?;
+                self.registry
+                    .set_member_voice(&id, &person, Voice::parse(&field("voice")))
                     .map_err(fail)?;
                 Ok(format!("?i={id}&p={person}&m=saved&to=band"))
             }
@@ -2398,11 +2421,23 @@ mod tests {
         );
         // Edited back to playing.
         ui.act(&format!(
-            "csrf=s&id=&do=member-edit&p={}&name=Ute&can=suggest&plays=1",
+            "csrf=s&id=&do=member-edit&p={}&name=Ute&can=suggest&plays=1&voice=high",
             ute.id
         ))
         .unwrap();
         assert!(registry.members("").iter().all(|m| m.plays));
+        // A singer's voice: given when editing, kept as the app reads it.
+        let members = registry.members("");
+        assert_eq!(
+            members.iter().find(|m| m.name == "Ute").unwrap().voice,
+            Some(Voice::High)
+        );
+        assert_eq!(
+            members.iter().find(|m| m.name == "Niko").unwrap().voice,
+            None
+        );
+        let page = ui.page("", &ute.id, 0, None, None, "band", 7);
+        assert!(page.contains("<option value=\"high\" selected>Frauenstimme"));
         drop(server);
         let _ = std::fs::remove_dir_all(&root);
     }
@@ -2642,6 +2677,7 @@ mod tests {
             until: None,
             can,
             ai: None,
+            voice: None,
             plays: true,
         };
         let mut list = vec![

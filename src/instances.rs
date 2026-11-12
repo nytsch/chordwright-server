@@ -22,7 +22,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
 use chordwright_server::{
-    is_instance_id, looks_like_assistant_key, Assistant, Can, Hub, Library, Member, ROLES,
+    is_instance_id, looks_like_assistant_key, Assistant, Can, Hub, Library, Member, Voice, ROLES,
 };
 use serde::{Deserialize, Serialize};
 
@@ -344,6 +344,7 @@ impl Registry {
                 can,
                 plays,
                 ai: None,
+                voice: None,
             };
             members.push(member.clone());
             Ok(member)
@@ -371,6 +372,19 @@ impl Registry {
             m.can = can;
             m.plays = plays;
             m.ai = ai;
+            Ok(())
+        })
+    }
+
+    /// Die Stimme eines Sängers (None: nicht angegeben).
+    pub fn set_member_voice(
+        &self,
+        lib: &str,
+        id: &str,
+        voice: Option<Voice>,
+    ) -> Result<(), String> {
+        self.change_members(lib, |members| {
+            find_member(members, id)?.voice = voice;
             Ok(())
         })
     }

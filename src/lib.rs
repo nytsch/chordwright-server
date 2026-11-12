@@ -232,6 +232,41 @@ impl Can {
     }
 }
 
+/// Which voice a singer leads with: a man's or a woman's. The app asks who
+/// sings lead when both are in a set, and suggests a key for that voice.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Voice {
+    Low,
+    High,
+}
+
+impl Voice {
+    /// As a form sends it (`low`, `high`); anything else: not given.
+    pub fn parse(text: &str) -> Option<Voice> {
+        match text {
+            "low" => Some(Voice::Low),
+            "high" => Some(Voice::High),
+            _ => None,
+        }
+    }
+
+    pub fn id(&self) -> &'static str {
+        match self {
+            Voice::Low => "low",
+            Voice::High => "high",
+        }
+    }
+
+    /// For the web UI.
+    pub fn label(&self) -> &'static str {
+        match self {
+            Voice::Low => "Männerstimme",
+            Voice::High => "Frauenstimme",
+        }
+    }
+}
+
 /// A musician's way into a library: everything to read, the shared stage to
 /// lead and follow, their own answers to write — and, as `can` says, the sets
 /// or the songs too.
@@ -257,6 +292,9 @@ pub struct Member {
     /// Questions to the assistant a day; None: the library's (`Assistant::daily`), 0: none.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ai: Option<u32>,
+    /// A singer's voice; None: not given.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub voice: Option<Voice>,
 }
 
 fn plays_by_default() -> bool {

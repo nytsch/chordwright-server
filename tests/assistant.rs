@@ -90,6 +90,7 @@ fn member(id: &str, ai: Option<u32>) -> Member {
         can: Default::default(),
         plays: true,
         ai,
+        voice: None,
     }
 }
 

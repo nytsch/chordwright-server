@@ -1,5 +1,9 @@
 # Changelog
 
+## 2.9.0
+
+- Neu je Musiker: **Stimme** (Männerstimme oder Frauenstimme, unter **Band**). Für Sänger: Stehen eine Frau und ein Mann im Set, fragt die App beim Hinzufügen eines Songs, wer die Hauptstimme singt, und schlägt eine Tonart dafür vor. Für die App: `voice` (`low`, `high` oder `null`) in `/api/band` und `/api/health`.
+
 ## 2.8.0
 
 - Nachrichten: Ein Musiker kann der Leitung etwas melden, zum Beispiel einen Fehler in einem Song. Die Leitung, also du und jeder Musiker, der **Sets bearbeiten** darf oder mehr, schreibt einem Musiker oder allen, zum Beispiel „Du wurdest einem Termin zugeteilt“. Wer eine Nachricht bekommen hat, bestätigt, dass er sie gelesen hat; der Absender sieht, wer wann.

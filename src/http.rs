@@ -206,7 +206,7 @@ fn roster(members: &[Member]) -> Value {
     Value::Array(
         members
             .iter()
-            .map(|m| json!({ "id": m.id, "name": m.name, "roles": m.roles, "can": m.can, "plays": m.plays }))
+            .map(|m| json!({ "id": m.id, "name": m.name, "roles": m.roles, "can": m.can, "plays": m.plays, "voice": m.voice }))
             .collect(),
     )
 }
@@ -516,7 +516,7 @@ async fn route(s: Arc<Shared>, req: Request<Incoming>, seen: &mut Seen) -> Respo
             health["access"] = match s.access(&given) {
                 Ok(Some(Access::Owner)) => json!("owner"),
                 Ok(Some(Access::Member(m))) => {
-                    health["member"] = json!({ "id": m.id, "name": m.name, "roles": m.roles, "can": m.can, "plays": m.plays });
+                    health["member"] = json!({ "id": m.id, "name": m.name, "roles": m.roles, "can": m.can, "plays": m.plays, "voice": m.voice });
                     health["until"] = json!(m.until);
                     json!("member")
                 }
