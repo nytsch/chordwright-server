@@ -89,6 +89,7 @@ fn member(id: &str, ai: Option<u32>) -> Member {
         until: None,
         can: Default::default(),
         plays: true,
+        arrangements: vec![],
         ai,
     }
 }

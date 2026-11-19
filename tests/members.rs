@@ -40,6 +40,7 @@ fn member(id: &str, name: &str, token: &str, roles: &[&str], until: Option<i64>)
         until,
         ai: None,
         plays: true,
+        arrangements: vec![],
         can: Default::default(),
     }
 }
@@ -147,7 +148,7 @@ fn musicians_read_play_along_and_write_only_their_answers() {
     assert!(band.contains("\"me\":\"lea\""), "{band}");
     assert!(
         band.contains(
-            "{\"id\":\"niko\",\"name\":\"Niko\",\"roles\":[\"A\",\"S\"],\"can\":\"read\",\"plays\":true}"
+            "{\"id\":\"niko\",\"name\":\"Niko\",\"roles\":[\"A\",\"S\"],\"can\":\"read\",\"plays\":true,\"arrangements\":[]}"
         ),
         "{band}"
     );
@@ -421,6 +422,112 @@ fn someone_who_only_reads_along_is_not_planned() {
         "{}",
     );
     assert_eq!(status(&answer), "204", "{answer}");
+    drop(server);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn own_and_given_arrangements_without_editing_songs() {
+    let dir = std::env::temp_dir().join(format!("cw-members-flows-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let sam = Member {
+        can: Can::Sets,
+        arrangements: vec!["lord/std".into()],
+        ..member("sam", "Sam", "sam-token", &["D"], None)
+    };
+    let server = Server::start(Options {
+        dir: dir.join("main"),
+        token: "owner".into(),
+        members: vec![sam, member("ute", "Ute", "ute-token", &[], None)],
+        port: 0,
+        ..Options::default()
+    })
+    .unwrap();
+    let port = server.ready().port;
+    let put = |token: &str, body: &str| {
+        let answer = request(port, token, "PUT", "/api/user/record/songSettings", body);
+        status(&answer).to_string()
+    };
+    let settings = |lord: &str, other: &str| {
+        format!(
+            r#"{{"v":1,"data":{{"lord":{{"capo":2,"arrangements":[{lord}]}},"oh":{{"arrangements":[{other}]}}}}}}"#
+        )
+    };
+    let std8 = r#"{"id":"std","name":"Standard","parts":[{"id":"p1","bars":8}]}"#;
+    let std4 = r#"{"id":"std","name":"Standard","parts":[{"id":"p1","bars":4}]}"#;
+    let live = r#"{"id":"live","name":"Live","parts":[]}"#;
+    let oh = r#"{"id":"o1","name":"Standard","parts":[]}"#;
+    let oh2 = r#"{"id":"o1","name":"Standard","parts":[{"id":"x"}]}"#;
+    let sams = r#"{"id":"s1","name":"Sam","owner":"sam","parts":[]}"#;
+    let sams2 = r#"{"id":"s1","name":"Sam","owner":"sam","parts":[{"id":"y"}]}"#;
+    let utes = r#"{"id":"u1","name":"Ute","owner":"ute","parts":[]}"#;
+
+    assert_eq!(
+        put("owner", &settings(&format!("{std8},{live}"), oh)),
+        "204"
+    );
+    // A standard arrangement they were given: yes. Another one: no.
+    assert_eq!(
+        put("sam-token", &settings(&format!("{std4},{live}"), oh)),
+        "204"
+    );
+    assert_eq!(
+        put("sam-token", &settings(std4, oh)),
+        "403",
+        "live is not theirs"
+    );
+    assert_eq!(
+        put("sam-token", &settings(&format!("{std4},{live}"), oh2)),
+        "403"
+    );
+    // Their own: add, change, remove — also one who only reads.
+    assert_eq!(
+        put("sam-token", &settings(&format!("{std4},{live},{sams}"), oh)),
+        "204"
+    );
+    assert_eq!(
+        put(
+            "sam-token",
+            &settings(&format!("{std4},{live},{sams2}"), oh)
+        ),
+        "204"
+    );
+    assert_eq!(
+        put(
+            "ute-token",
+            &settings(&format!("{std4},{live},{sams2}"), &format!("{oh},{utes}"))
+        ),
+        "204"
+    );
+    // Someone else's: no — neither change nor remove.
+    assert_eq!(
+        put(
+            "sam-token",
+            &settings(&format!("{std4},{live},{sams2}"), oh)
+        ),
+        "403"
+    );
+    assert_eq!(
+        put(
+            "ute-token",
+            &settings(&format!("{std4},{live},{sams}"), &format!("{oh},{utes}"))
+        ),
+        "403"
+    );
+    // The rest of the record stays as it is.
+    let capo3 = settings(&format!("{std4},{live},{sams2}"), &format!("{oh},{utes}"))
+        .replace("\"capo\":2", "\"capo\":3");
+    assert_eq!(put("sam-token", &capo3), "403");
+    // Nor do they delete the record.
+    let answer = request(
+        port,
+        "sam-token",
+        "DELETE",
+        "/api/user/record/songSettings",
+        "",
+    );
+    assert_eq!(status(&answer), "403");
+
     drop(server);
     let _ = std::fs::remove_dir_all(&dir);
 }

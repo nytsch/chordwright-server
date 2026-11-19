@@ -46,6 +46,7 @@ Deine Musiker sollen Songs, Sets und Abläufe sehen, der Bühne folgen und eintr
   - **Sets bearbeiten:** Sets anlegen, ändern, löschen und die Besetzung einteilen.
   - **Songs und Sets bearbeiten:** außerdem Songs anlegen und ändern, samt Abläufen, Song-Einstellungen und den übrigen Einstellungen der Bibliothek.
   - **Admin: auch Vorschläge übernehmen:** wie Songs und Sets bearbeiten, und dazu sieht er alle Vorschläge und kann sie in der App übernehmen oder ablehnen. Einen Song löschen kann er auch so nicht: Steckt eine Löschung in einem Vorschlag, bleibt sie für dich offen.
+- **Abläufe:** Eigene Abläufe (in der App mit `owner` = seine Kennung) legt jeder an, ändert und löscht sie, auch mit **Nur lesen**. Standardabläufe (ohne `owner`) ändert nur, wer **Songs und Sets bearbeiten** darf — oder wem du sie einzeln freigibst: beim Musiker unter **Darf diese Standardabläufe ändern** auswählen. Alles andere in den Song-Einstellungen (Capo, fremde Abläufe) bleibt dann unangetastet; der Server prüft das bei jedem Speichern.
 - **Spielt mit** (Haken, Voreinstellung an): Er wird nach Terminen gefragt und in Sets eingeteilt. Ohne Haken liest er nur mit, wie es sein Recht erlaubt, also auch Songs vorschlagen, wenn er **Änderungen vorschlagen** darf. Die App lässt ihn aus der Planung weg, und Termine beantworten kann er nicht. In der Liste steht er mit „nicht in der Planung“.
 - **Bleibt bei dir:** Songs löschen, Sicherungen ansehen oder wiederherstellen, die Antworten anderer. Der Server weist das ab (`403 read only`), gleich was die App versucht.
 
