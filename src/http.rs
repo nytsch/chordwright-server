@@ -206,7 +206,7 @@ fn roster(members: &[Member]) -> Value {
     Value::Array(
         members
             .iter()
-            .map(|m| json!({ "id": m.id, "name": m.name, "roles": m.roles, "can": m.can, "plays": m.plays }))
+            .map(|m| json!({ "id": m.id, "name": m.name, "roles": m.roles, "can": m.can, "plays": m.plays, "arrangements": m.arrangements }))
             .collect(),
     )
 }
@@ -516,7 +516,7 @@ async fn route(s: Arc<Shared>, req: Request<Incoming>, seen: &mut Seen) -> Respo
             health["access"] = match s.access(&given) {
                 Ok(Some(Access::Owner)) => json!("owner"),
                 Ok(Some(Access::Member(m))) => {
-                    health["member"] = json!({ "id": m.id, "name": m.name, "roles": m.roles, "can": m.can, "plays": m.plays });
+                    health["member"] = json!({ "id": m.id, "name": m.name, "roles": m.roles, "can": m.can, "plays": m.plays, "arrangements": m.arrangements });
                     health["until"] = json!(m.until);
                     json!("member")
                 }
@@ -668,12 +668,18 @@ async fn route(s: Arc<Shared>, req: Request<Incoming>, seen: &mut Seen) -> Respo
     }
 
     // A musician writes their own answers, and what `can` allows.
+    let mut arrangements_only: Option<Member> = None;
     if let (true, Some(m)) = (
         method == Method::PUT || method == Method::DELETE,
         access.member(),
     ) {
         if !m.may_write(&db, &key, method == Method::DELETE) {
-            return read_only();
+            // Below `All`: their own arrangements and the standard ones they
+            // were given, nothing else of the record (`may_write_arrangements`).
+            if !(method == Method::PUT && db == "user" && key == "songSettings") {
+                return read_only();
+            }
+            arrangements_only = Some(m.clone());
         }
     }
     let guard_index = access.member().is_some() && db == "library" && key == "index";
@@ -699,6 +705,21 @@ async fn route(s: Arc<Shared>, req: Request<Incoming>, seen: &mut Seen) -> Respo
             String::new()
         };
         let (db2, key2) = (db.clone(), key.clone());
+        if let Some(m) = arrangements_only {
+            let (new, db3, key3) = (value.clone(), db.clone(), key.clone());
+            let ok = blocking(&s, move |s| {
+                let before = s.store.read_versioned(&db3, &key3).value;
+                m.may_write_arrangements(before.as_deref(), &new)
+            })
+            .await;
+            if !ok {
+                s.self_writes
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .remove(&stamp);
+                return read_only();
+            }
+        }
         if guard_index {
             let (new, db3, key3) = (value.clone(), db.clone(), key.clone());
             let drops = blocking(&s, move |s| {

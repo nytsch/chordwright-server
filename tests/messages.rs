@@ -34,6 +34,7 @@ fn member(id: &str, can: Can) -> Member {
         until: None,
         ai: None,
         plays: true,
+        arrangements: vec![],
         can,
     }
 }

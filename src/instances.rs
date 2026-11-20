@@ -344,6 +344,7 @@ impl Registry {
                 can,
                 plays,
                 ai: None,
+                arrangements: Vec::new(),
             };
             members.push(member.clone());
             Ok(member)
@@ -371,6 +372,30 @@ impl Registry {
             m.can = can;
             m.plays = plays;
             m.ai = ai;
+            Ok(())
+        })
+    }
+
+    /// Welche Standardabläufe er ändern darf, auch ohne „Songs bearbeiten“:
+    /// `<Song>/<Ablauf>` oder `<Song>/*`. Leer: keinen.
+    pub fn set_member_arrangements(
+        &self,
+        lib: &str,
+        id: &str,
+        arrangements: &[String],
+    ) -> Result<(), String> {
+        let mut list: Vec<String> = arrangements
+            .iter()
+            .map(|a| a.trim().to_string())
+            .filter(|a| {
+                a.split_once('/')
+                    .is_some_and(|(s, x)| !s.is_empty() && !x.is_empty() && !x.contains('/'))
+            })
+            .collect();
+        list.sort();
+        list.dedup();
+        self.change_members(lib, |members| {
+            find_member(members, id)?.arrangements = list;
             Ok(())
         })
     }

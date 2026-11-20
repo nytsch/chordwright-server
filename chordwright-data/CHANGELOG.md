@@ -1,5 +1,10 @@
 # Changelog
 
+## 2.9.0
+
+- Abläufe: Jeder Musiker kann eigene Abläufe anlegen, ändern und löschen, auch mit **Nur lesen**. Standardabläufe bleiben bei denen, die **Songs und Sets bearbeiten** dürfen. Du kannst sie aber einzelnen Musikern freigeben, in der Web-UI unter **Band** → **Darf diese Standardabläufe ändern**. Der Server prüft bei jedem Speichern, dass sonst nichts an den Song-Einstellungen geändert wird.
+- Für die App: Ein Ablauf mit `owner` (Musiker-ID) gehört diesem Musiker. `/api/health` (`member`) und `/api/band` nennen die Freigaben als `arrangements` (`<Song>/<Ablauf>` oder `<Song>/*`).
+
 ## 2.8.0
 
 - Nachrichten: Ein Musiker kann der Leitung etwas melden, zum Beispiel einen Fehler in einem Song. Die Leitung, also du und jeder Musiker, der **Sets bearbeiten** darf oder mehr, schreibt einem Musiker oder allen, zum Beispiel „Du wurdest einem Termin zugeteilt“. Wer eine Nachricht bekommen hat, bestätigt, dass er sie gelesen hat; der Absender sieht, wer wann.

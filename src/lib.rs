@@ -257,6 +257,11 @@ pub struct Member {
     /// Questions to the assistant a day; None: the library's (`Assistant::daily`), 0: none.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ai: Option<u32>,
+    /// Standard arrangements (`songSettings`) they may change below `All`:
+    /// `<song id>/<arrangement id>`, or `<song id>/*` for every one of a song.
+    /// Their own arrangements (`owner` = their id) they change anyway.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub arrangements: Vec<String>,
 }
 
 fn plays_by_default() -> bool {
@@ -292,6 +297,99 @@ impl Member {
             (Can::All | Can::Admin, "library") => !remove,
             _ => false,
         }
+    }
+}
+
+impl Member {
+    /// Whether they may change this arrangement of `song` as it stands:
+    /// their own, or a standard one they were given. Someone else's never.
+    fn may_change_arrangement(&self, song: &str, a: &serde_json::Value) -> bool {
+        match a.get("owner").and_then(|o| o.as_str()) {
+            Some(owner) => owner == self.id,
+            None => {
+                let id = a.get("id").and_then(|i| i.as_str()).unwrap_or_default();
+                self.arrangements
+                    .iter()
+                    .any(|g| *g == format!("{song}/{id}") || *g == format!("{song}/*"))
+            }
+        }
+    }
+
+    /// Whether a new `user/songSettings` changes only arrangements they may
+    /// change (`may_change_arrangement`, before and after): everything else
+    /// in it — other arrangements, capo, the rest of a song's settings —
+    /// stays as it was. For those who may not write the record outright.
+    pub fn may_write_arrangements(&self, old: Option<&str>, new: &str) -> bool {
+        use serde_json::{Map, Value};
+        let parse = |t: &str| serde_json::from_str::<Value>(t).ok();
+        let old = match old {
+            None | Some("") => serde_json::json!({ "v": 1, "data": {} }),
+            Some(t) => match parse(t) {
+                Some(v) => v,
+                None => return false,
+            },
+        };
+        let Some(new) = parse(new) else { return false };
+        // Each record without its arrangements, and these by song.
+        type Split = (Value, Map<String, Value>);
+        fn split(mut v: Value) -> Option<Split> {
+            let mut lists = Map::new();
+            let songs = v.get_mut("data")?.as_object_mut()?;
+            songs.retain(|id, song| {
+                if let Some(obj) = song.as_object_mut() {
+                    if let Some(list) = obj.remove("arrangements") {
+                        lists.insert(id.clone(), list);
+                    }
+                    return !obj.is_empty();
+                }
+                true
+            });
+            Some((v, lists))
+        }
+        let (Some((old_rest, old_lists)), Some((new_rest, new_lists))) = (split(old), split(new))
+        else {
+            return false;
+        };
+        if old_rest != new_rest {
+            return false;
+        }
+        let by_id = |list: Option<&Value>| -> Option<Vec<(String, Value)>> {
+            let Some(list) = list else {
+                return Some(Vec::new());
+            };
+            list.as_array()?
+                .iter()
+                .map(|a| Some((a.get("id")?.as_str()?.to_string(), a.clone())))
+                .collect()
+        };
+        let songs: std::collections::BTreeSet<String> =
+            old_lists.keys().chain(new_lists.keys()).cloned().collect();
+        let ok = songs.iter().all(|song| {
+            let (Some(before), Some(after)) =
+                (by_id(old_lists.get(song)), by_id(new_lists.get(song)))
+            else {
+                return false;
+            };
+            let find = |list: &[(String, Value)], id: &str| {
+                list.iter().find(|(i, _)| i == id).map(|(_, a)| a.clone())
+            };
+            let ids: std::collections::BTreeSet<String> = before
+                .iter()
+                .chain(after.iter())
+                .map(|(i, _)| i.clone())
+                .collect();
+            let ok = ids
+                .iter()
+                .all(|id| match (find(&before, id), find(&after, id)) {
+                    (Some(b), Some(a)) if a == b => true,
+                    (b, a) => [b, a]
+                        .iter()
+                        .flatten()
+                        .all(|x| self.may_change_arrangement(song, x)),
+                });
+            ok
+        });
+        ok
     }
 }
 
@@ -633,6 +731,37 @@ impl Hub {
             None => Some(self.0.main.clone()),
             Some(id) => Some(self.instances().get(id)?.shared.clone()),
         }
+    }
+
+    /// The standard arrangements of `/i/<id>` (None: the server's own) — those
+    /// without an `owner` — as (`<song>/<arrangement>`, `Song › Name`), by title.
+    pub fn standard_arrangements(&self, id: Option<&str>) -> Vec<(String, String)> {
+        let Some(s) = self.shared(id) else {
+            return Vec::new();
+        };
+        let titles = s.store.song_titles();
+        let Some(text) = s.store.read_versioned("user", "songSettings").value else {
+            return Vec::new();
+        };
+        let Ok(v) = serde_json::from_str::<serde_json::Value>(&text) else {
+            return Vec::new();
+        };
+        let mut out = Vec::new();
+        for (song, settings) in v["data"].as_object().into_iter().flatten() {
+            let title = titles.get(song).cloned().unwrap_or_else(|| song.clone());
+            for a in settings["arrangements"].as_array().into_iter().flatten() {
+                if a.get("owner").is_some_and(|o| !o.is_null()) {
+                    continue;
+                }
+                let Some(aid) = a["id"].as_str() else {
+                    continue;
+                };
+                let name = a["name"].as_str().unwrap_or(aid);
+                out.push((format!("{song}/{aid}"), format!("{title} › {name}")));
+            }
+        }
+        out.sort_by_key(|a| a.1.to_lowercase());
+        out
     }
 
     /// The proposals of `/i/<id>` (None: the server's own), newest first.

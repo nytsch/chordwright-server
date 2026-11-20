@@ -1346,11 +1346,48 @@ impl Ui {
             "<input name=\"ai\" type=\"number\" min=\"0\" max=\"{AI_MAX}\" value=\"{}\" placeholder=\"KI/Tag\" aria-label=\"KI-Fragen am Tag\" title=\"Fragen an die KI im Ablaufplaner je Tag. Leer: wie für alle, 0: keine\" class=\"short\">",
             m.ai.map(|n| n.to_string()).unwrap_or_default()
         );
+        // Standardabläufe, die er ändern darf, auch ohne „Songs bearbeiten“
+        // (eigene Abläufe ändert jeder ohnehin). Mit „Songs“ gilt alles.
+        let flows = if matches!(m.can, Can::All | Can::Admin) {
+            String::new()
+        } else {
+            let all = self
+                .hub
+                .standard_arrangements((!sel.is_empty()).then_some(sel));
+            let mut given: Vec<(String, String)> = all.clone();
+            for g in &m.arrangements {
+                if !given.iter().any(|(v, _)| v == g) {
+                    given.push((g.clone(), g.clone()));
+                }
+            }
+            if given.is_empty() {
+                String::new()
+            } else {
+                let options: String = given
+                    .iter()
+                    .map(|(v, label)| {
+                        let on = if m.arrangements.contains(v) {
+                            " selected"
+                        } else {
+                            ""
+                        };
+                        format!("<option value=\"{}\"{on}>{}</option>", esc(v), esc(label))
+                    })
+                    .collect();
+                format!(
+                    "<form class=\"row\" method=\"post\" action=\"./\">{hidden}<input type=\"hidden\" name=\"do\" value=\"member-arrangements\">\
+                     <label class=\"muted\" for=\"flows\">Darf diese Standardabläufe ändern</label>\
+                     <select id=\"flows\" name=\"arrangement\" multiple size=\"{}\" aria-label=\"Standardabläufe, die er ändern darf\" title=\"Mehrere mit Strg/⌘. Eigene Abläufe ändert jeder ohnehin.\">{options}</select>\
+                     <button class=\"quiet\">Speichern</button></form>\n  ",
+                    given.len().clamp(3, 8)
+                )
+            }
+        };
         let manage = format!(
             "<section>\n  <p><b>{}</b> <span class=\"muted\">· {}</span></p>\n  \
              <form class=\"row\" method=\"post\" action=\"./\">{hidden}<input type=\"hidden\" name=\"do\" value=\"member-edit\">\
              <input name=\"name\" required maxlength=\"60\" value=\"{}\" aria-label=\"Name\">\
-             <span class=\"roles\" role=\"group\" aria-label=\"Rollen\">{}</span>{}{}{}<button class=\"quiet\">Speichern</button></form>\n  \
+             <span class=\"roles\" role=\"group\" aria-label=\"Rollen\">{}</span>{}{}{}<button class=\"quiet\">Speichern</button></form>\n  {flows}\
              <form class=\"row\" method=\"post\" action=\"./\">{hidden}<input type=\"hidden\" name=\"do\" value=\"member-extend\">\
              <select name=\"days\" aria-label=\"Ab jetzt für\">{}</select><button class=\"quiet\" title=\"Der Token bleibt; verbundene Geräte bleiben verbunden\">Verlängern</button></form>\n  \
              <form class=\"row\" method=\"post\" action=\"./\" onsubmit=\"return confirm('Von der Liste nehmen? Mit diesem Zugang kommt niemand mehr hinein.')\">{hidden}<input type=\"hidden\" name=\"do\" value=\"member-remove\">\
@@ -1628,6 +1665,12 @@ impl Ui {
                         plays(),
                         count("ai"),
                     )
+                    .map_err(fail)?;
+                Ok(format!("?i={id}&p={person}&m=saved&to=band"))
+            }
+            "member-arrangements" => {
+                self.registry
+                    .set_member_arrangements(&id, &person, &form_fields(body, "arrangement"))
                     .map_err(fail)?;
                 Ok(format!("?i={id}&p={person}&m=saved&to=band"))
             }
@@ -2643,6 +2686,7 @@ mod tests {
             can,
             ai: None,
             plays: true,
+            arrangements: vec![],
         };
         let mut list = vec![
             m("zoe", Can::Read),
