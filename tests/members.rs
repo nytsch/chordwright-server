@@ -41,6 +41,7 @@ fn member(id: &str, name: &str, token: &str, roles: &[&str], until: Option<i64>)
         ai: None,
         plays: true,
         arrangements: vec![],
+        churchtools: None,
         can: Default::default(),
     }
 }
@@ -433,6 +434,7 @@ fn own_and_given_arrangements_without_editing_songs() {
     let sam = Member {
         can: Can::Sets,
         arrangements: vec!["lord/std".into()],
+        churchtools: None,
         ..member("sam", "Sam", "sam-token", &["D"], None)
     };
     let server = Server::start(Options {

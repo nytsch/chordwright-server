@@ -40,6 +40,7 @@
 //!   DELETE /api/messages/:id       → its sender or the owner removes it
 //!   GET    /api/band               → { roles, members: [{ id, name, roles }], me }
 //!   POST   /api/assistant          → the AI assistant, with the library's key (assistant.rs)
+//!   GET    /api/churchtools/…      → dates, services and songs from ChurchTools, with the library's token (churchtools.rs)
 //!
 //! A musician's token (`Member`) opens the same routes to read, and the
 //! stage; it writes only `user/availability.<their id>`, under their name.
@@ -71,6 +72,7 @@ use tokio::sync::mpsc;
 
 use crate::assistant::{self, Asker, Desk};
 use crate::backups::Backups;
+use crate::churchtools::{self, ChurchTools};
 use crate::journal::{Journal, Written};
 use crate::messages::{self, Messages};
 use crate::pairing::{Attempt, Pairing};
@@ -160,6 +162,8 @@ pub struct Shared {
     pub members: RwLock<Vec<Member>>,
     /// The assistant: its key and limits, today's counts, the log.
     pub desk: Arc<Desk>,
+    /// ChurchTools: its address and token (churchtools.rs).
+    pub churchtools: RwLock<Option<ChurchTools>>,
     pub store: Store,
     pub backups: Backups,
     pub journal: Journal,
@@ -201,14 +205,19 @@ impl Access {
     }
 }
 
+/// A musician as the band sees them, without their token; `churchtools`
+/// only when they are linked to a person there.
+fn public(m: &Member) -> Value {
+    let mut v = json!({ "id": m.id, "name": m.name, "roles": m.roles, "can": m.can, "plays": m.plays, "arrangements": m.arrangements });
+    if let Some(p) = m.churchtools {
+        v["churchtools"] = json!(p);
+    }
+    v
+}
+
 /// Who plays in a library, without anyone's token.
 fn roster(members: &[Member]) -> Value {
-    Value::Array(
-        members
-            .iter()
-            .map(|m| json!({ "id": m.id, "name": m.name, "roles": m.roles, "can": m.can, "plays": m.plays, "arrangements": m.arrangements }))
-            .collect(),
-    )
+    Value::Array(members.iter().map(public).collect())
 }
 
 impl Shared {
@@ -226,6 +235,13 @@ impl Shared {
             .collect();
         *self.members.write().unwrap_or_else(|e| e.into_inner()) = members;
         self.listeners.drop_members();
+    }
+
+    pub fn churchtools(&self) -> Option<ChurchTools> {
+        self.churchtools
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
     }
 
     /// Who asks the assistant, with their daily limit.
@@ -419,6 +435,7 @@ fn kind_of(part: Option<&str>, method: &Method) -> &'static str {
         Some("health" | "time") => "check",
         Some("stage") => "stage",
         Some("assistant") => "assistant",
+        Some("churchtools") => "read",
         Some("backups") => "backups",
         Some("proposals" | "messages") if method == Method::GET => "read",
         Some("proposals" | "messages") => "write",
@@ -506,6 +523,7 @@ async fn route(s: Arc<Shared>, req: Request<Incoming>, seen: &mut Seen) -> Respo
                 "proposals": true,
                 "messages": true,
                 "assistant": s.desk.config().is_some(),
+                "churchtools": s.churchtools().is_some(),
         });
         // With a token, what it may do — so a musician's app knows who it is
         // and what not to write.
@@ -516,7 +534,7 @@ async fn route(s: Arc<Shared>, req: Request<Incoming>, seen: &mut Seen) -> Respo
             health["access"] = match s.access(&given) {
                 Ok(Some(Access::Owner)) => json!("owner"),
                 Ok(Some(Access::Member(m))) => {
-                    health["member"] = json!({ "id": m.id, "name": m.name, "roles": m.roles, "can": m.can, "plays": m.plays, "arrangements": m.arrangements });
+                    health["member"] = public(&m);
                     health["until"] = json!(m.until);
                     json!("member")
                 }
@@ -592,6 +610,29 @@ async fn route(s: Arc<Shared>, req: Request<Incoming>, seen: &mut Seen) -> Respo
             };
         }
         Some("assistant") => return error(405, "method not allowed"),
+        Some("churchtools") if method == Method::GET => {
+            let members = s.members();
+            let answer = churchtools::answer(
+                s.churchtools(),
+                &members,
+                access.member(),
+                &parts[2..],
+                &query,
+            )
+            .await;
+            return match answer {
+                Ok(churchtools::Answer::Json(v)) => send(200, v),
+                Ok(churchtools::Answer::File { content_type, body }) => Response::builder()
+                    .status(200)
+                    .header("content-type", content_type)
+                    .header("access-control-allow-origin", "*")
+                    .header("cache-control", "no-store")
+                    .body(Full::new(body).boxed())
+                    .expect("valid response"),
+                Err(no) => send(no.status, no.body),
+            };
+        }
+        Some("churchtools") => return error(405, "method not allowed"),
         Some("proposals") => return proposals_route(&s, req, &parts[2..], &access).await,
         Some("messages") => return messages_route(&s, req, &parts[2..], &access).await,
         Some("backups") if access.member().is_some() => return read_only(),
