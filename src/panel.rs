@@ -19,7 +19,8 @@ use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use chordwright_server::{
-    Can, ChangeState, Hub, Member, ProposalStatus, Stats, ROLES, USAGE_KINDS,
+    churchtools_person_name, Can, ChangeState, ChurchTools, Hub, Member, ProposalStatus, Stats,
+    ROLES, USAGE_KINDS,
 };
 use qrcodegen::{QrCode, QrCodeEcc};
 
@@ -566,6 +567,10 @@ fn notice(code: &str) -> Option<&'static str> {
         "ai-key" => "Schlüssel gespeichert. Die KI im Ablaufplaner läuft jetzt über diesen Server.",
         "ai-limits" => "Limits gespeichert.",
         "ai-off" => "Schlüssel entfernt. Die KI ist aus.",
+        "ct-on" => {
+            "Mit ChurchTools verbunden. Die App holt Termine und Songs jetzt über diesen Server."
+        }
+        "ct-off" => "Von ChurchTools getrennt. Der Token ist gelöscht.",
         "accepted" => "Übernommen. Die Änderungen stehen jetzt in der Bibliothek.",
         "partly" => "Teilweise übernommen. Was sich inzwischen geändert hat, ist offen geblieben.",
         "rejected" => "Abgelehnt. In der Bibliothek hat sich nichts geändert.",
@@ -782,6 +787,7 @@ impl Ui {
 
         let band = self.band_section(sel, person, &shown, chosen, now);
         let ki = self.ai_section(sel);
+        let ct = self.churchtools_section(sel);
         let suggestions = self.proposals_section(sel, now);
         let usage = self.usage_section(sel, days, now);
 
@@ -893,7 +899,7 @@ impl Ui {
         // der Iframe rutscht aus dem Bild, es bleibt schwarz. `scrollTo`
         // bewegt nur dieses Fenster.
         let scroll = match to {
-            "band" | "vorschlaege" | "ki" | "nutzung" => format!(
+            "band" | "vorschlaege" | "ki" | "churchtools" | "nutzung" => format!(
                 "<script>addEventListener('load',()=>{{const b=document.getElementById('{to}');if(b)scrollTo(0,b.getBoundingClientRect().top+scrollY-16)}})</script>\n"
             ),
             _ => String::new(),
@@ -909,7 +915,7 @@ impl Ui {
             "{HEAD}<header><h1>Chordwright Data</h1><p class=\"muted\">{sub}</p></header>\n{banner}\
              <h2>Bibliotheken</h2>\n<div class=\"libs\">\n{cards}{create}\n</div>\n\
              <article>\n<h2>{}</h2>\n{chips}\n<div class=\"steps\">\n{steps}\n</div>\n\
-             <h3 id=\"band\">Band</h3>\n{band}\n<h3 id=\"vorschlaege\">Vorschläge</h3>\n{suggestions}\n<h3 id=\"ki\">KI</h3>\n{ki}\n<h3>Zahlen</h3>\n{figures}\n<h3 id=\"nutzung\">Nutzung</h3>\n{usage}\n<h3>Verwalten</h3>\n{manage}\n</article>\n</main>\n{LOCAL_TIME}{SHARE}{scroll}</body>\n</html>\n",
+             <h3 id=\"band\">Band</h3>\n{band}\n<h3 id=\"vorschlaege\">Vorschläge</h3>\n{suggestions}\n<h3 id=\"ki\">KI</h3>\n{ki}\n<h3 id=\"churchtools\">ChurchTools</h3>\n{ct}\n<h3>Zahlen</h3>\n{figures}\n<h3 id=\"nutzung\">Nutzung</h3>\n{usage}\n<h3>Verwalten</h3>\n{manage}\n</article>\n</main>\n{LOCAL_TIME}{SHARE}{scroll}</body>\n</html>\n",
             esc(&shown.name)
         )
     }
@@ -1477,6 +1483,62 @@ impl Ui {
         )
     }
 
+    /// ChurchTools: Adresse und Token, und wer in der Band welche Person dort
+    /// ist. Ohne Verbindung nur die Felder dafür.
+    fn churchtools_section(&self, sel: &str) -> String {
+        let csrf = self.csrf();
+        let id = esc(sel);
+        let hidden = format!("{csrf}<input type=\"hidden\" name=\"id\" value=\"{id}\">");
+        let current = self.registry.churchtools(sel);
+        let connect = |label: &str| {
+            format!(
+                "<form class=\"row\" method=\"post\" action=\"./\">{hidden}<input type=\"hidden\" name=\"do\" value=\"ct-save\">\
+                 <input name=\"url\" required autocomplete=\"off\" placeholder=\"gemeinde.church.tools\" value=\"{}\" aria-label=\"Adresse von ChurchTools\">\
+                 <input name=\"token\" type=\"password\" required autocomplete=\"off\" placeholder=\"Login-Token\" aria-label=\"Login-Token\" \
+                 title=\"Bleibt auf diesem Server: geht nie an die App und nie in eine Sicherung\"><button>{label}</button></form>",
+                esc(current.as_ref().map(|c| c.url.as_str()).unwrap_or(""))
+            )
+        };
+        let Some(ct) = current.as_ref() else {
+            return format!(
+                "<p class=\"muted\">Mit der Adresse deiner ChurchTools-Instanz und dem Login-Token eines ChurchTools-Benutzers holt die App Termine, wer dabei Dienst hat, und Songs über diesen Server. \
+                 Den Token findest du in ChurchTools beim Benutzer unter <b>Berechtigungen → Login-Token</b>. Am besten ein eigener Benutzer, der nur lesen darf, was die Band braucht.</p>\n{}",
+                connect("Verbinden")
+            );
+        };
+        let members = self.registry.members(sel);
+        let rows: String = members
+            .iter()
+            .map(|m| {
+                format!(
+                    "<li><form class=\"row\" method=\"post\" action=\"./\">{hidden}<input type=\"hidden\" name=\"do\" value=\"ct-person\"><input type=\"hidden\" name=\"p\" value=\"{}\">\
+                     <span style=\"flex:1 1 8em;align-self:center\">{}</span><input name=\"person\" type=\"number\" min=\"1\" value=\"{}\" placeholder=\"Person-ID\" style=\"flex:0 0 7em\" aria-label=\"ChurchTools-Person von {}\">\
+                     <button class=\"quiet\">Speichern</button></form></li>",
+                    esc(&m.id),
+                    esc(&m.name),
+                    m.churchtools.map(|p| p.to_string()).unwrap_or_default(),
+                    esc(&m.name)
+                )
+            })
+            .collect();
+        let people = if members.is_empty() {
+            "<p class=\"muted\">Noch niemand in der Band. Wer aufgenommen ist, lässt sich hier einer Person in ChurchTools zuordnen.</p>".to_string()
+        } else {
+            format!(
+                "<p class=\"muted\">Wer ist wer in ChurchTools: die Nummer aus der Adresse der Person in ChurchTools. Dann weiß die App, wer bei einem Termin Dienst hat, und jeder Musiker sieht seine Termine.</p>\n<ul class=\"rows\">{rows}</ul>"
+            )
+        };
+        format!(
+            "<p><span class=\"value\">{}</span> <span class=\"muted\">· {} · Token {}</span></p>\n{people}\n{}\n\
+             <form class=\"row\" method=\"post\" action=\"./\" onsubmit=\"return confirm('Von ChurchTools trennen? Der Token wird gelöscht.')\">{hidden}<input type=\"hidden\" name=\"do\" value=\"ct-remove\">\
+             <button class=\"quiet danger\">Trennen</button></form>",
+            esc(&ct.url),
+            esc(ct.user.as_deref().unwrap_or("verbunden")),
+            esc(&ct.masked()),
+            connect("Token ersetzen")
+        )
+    }
+
     /// Was Musiker vorschlagen: offen mit Vergleich, Übernehmen und Ablehnen;
     /// darunter die zuletzt entschiedenen.
     fn proposals_section(&self, sel: &str, now: i64) -> String {
@@ -1699,6 +1761,32 @@ impl Ui {
             "ai-remove" => {
                 self.registry.remove_assistant(&id).map_err(fail)?;
                 Ok(format!("?i={id}&m=ai-off&to=ki"))
+            }
+            "ct-save" => {
+                let mut ct = ChurchTools::new(&field("url"), &field("token")).map_err(fail)?;
+                let me = self.hub.churchtools_whoami(&ct).map_err(fail)?;
+                ct.user = Some(churchtools_person_name(&me));
+                self.registry.set_churchtools(&id, Some(ct)).map_err(fail)?;
+                Ok(format!("?i={id}&m=ct-on&to=churchtools"))
+            }
+            "ct-remove" => {
+                self.registry.set_churchtools(&id, None).map_err(fail)?;
+                Ok(format!("?i={id}&m=ct-off&to=churchtools"))
+            }
+            "ct-person" => {
+                let in_churchtools = match field("person").trim() {
+                    "" => None,
+                    p => Some(
+                        p.parse::<u64>()
+                            .ok()
+                            .filter(|p| *p > 0)
+                            .ok_or_else(|| fail("Die Person-ID ist eine Zahl.".into()))?,
+                    ),
+                };
+                self.registry
+                    .set_member_churchtools(&id, &person, in_churchtools)
+                    .map_err(fail)?;
+                Ok(format!("?i={id}&p={person}&m=saved&to=churchtools"))
             }
             "proposal-accept" => {
                 let keys = form_fields(body, "key");
@@ -2209,6 +2297,138 @@ mod tests {
     }
 
     #[test]
+    fn the_churchtools_section() {
+        use chordwright_server::{Options, Server};
+        use std::io::{BufRead, BufReader};
+        // ChurchTools: who the token is; a wrong one is the anonymous user.
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let ct_port = listener.local_addr().unwrap().port();
+        std::thread::spawn(move || {
+            for stream in listener.incoming() {
+                let mut stream = stream.unwrap();
+                let mut reader = BufReader::new(stream.try_clone().unwrap());
+                let mut head = String::new();
+                loop {
+                    let mut line = String::new();
+                    reader.read_line(&mut line).unwrap();
+                    if line == "\r\n" || line.is_empty() {
+                        break;
+                    }
+                    head.push_str(&line);
+                }
+                let id = if head.contains("Login gutes-token-123") {
+                    5
+                } else {
+                    -1
+                };
+                let body = format!(
+                    "{{\"data\":{{\"id\":{id},\"firstName\":\"Anna\",\"lastName\":\"Berg\"}}}}"
+                );
+                let _ = write!(
+                    stream,
+                    "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+            }
+        });
+        let root = std::env::temp_dir().join(format!("cw-panel-ct-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let (data, share) = (root.join("data"), root.join("share"));
+        std::fs::create_dir_all(&data).unwrap();
+        let server = Server::start(Options {
+            dir: share.join("chordwright"),
+            token: "owner".into(),
+            port: 0,
+            ..Options::default()
+        })
+        .unwrap();
+        let open = || {
+            Arc::new(Registry::open(
+                &data,
+                &share,
+                "chordwright",
+                0.0,
+                3,
+                server.hub(),
+            ))
+        };
+        let registry = open();
+        let ui = |registry: &Arc<Registry>| Ui {
+            panel: Panel {
+                addresses: Vec::new(),
+                scheme: "https".into(),
+                port: "4174".into(),
+                token: "owner".into(),
+                own_ca: false,
+                folder: "chordwright".into(),
+                samba: false,
+                public_url: None,
+            },
+            registry: registry.clone(),
+            hub: server.hub(),
+            secret: "s".into(),
+        };
+        let first = ui(&registry);
+        assert!(first.churchtools_section("").contains("Verbinden"));
+        let url = format!("http%3A%2F%2F127.0.0.1%3A{ct_port}%2Fapi");
+        let save = |ui: &Ui, token: &str| {
+            ui.act(&format!("csrf=s&id=&do=ct-save&url={url}&token={token}"))
+        };
+        let wrong = save(&first, "falsches-token-1").unwrap_err().1;
+        assert!(wrong.contains("nimmt den Token nicht an"), "{wrong}");
+        assert!(registry.churchtools("").is_none());
+        assert_eq!(
+            save(&first, "gutes-token-123").unwrap(),
+            "?i=&m=ct-on&to=churchtools"
+        );
+        let ct = registry.churchtools("").unwrap();
+        assert_eq!(ct.url, format!("http://127.0.0.1:{ct_port}"));
+        assert_eq!(ct.user.as_deref(), Some("Anna Berg"));
+
+        // Who is who: a musician, then a second one may not be the same person.
+        let m = registry
+            .add_member("", "Lea", &[], Can::Sets, true, 0, now_ms())
+            .unwrap();
+        let n = registry
+            .add_member("", "Max", &[], Can::Read, true, 0, now_ms())
+            .unwrap();
+        let person = |ui: &Ui, who: &str, p: &str| {
+            ui.act(&format!("csrf=s&id=&do=ct-person&p={who}&person={p}"))
+        };
+        person(&first, &m.id, "11").unwrap();
+        assert!(person(&first, &n.id, "11").is_err());
+        assert!(person(&first, &n.id, "elf").is_err());
+        let page = first.churchtools_section("");
+        assert!(
+            page.contains("Anna Berg") && page.contains("…-123") && page.contains("value=\"11\"")
+        );
+        assert!(
+            !page.contains("gutes-token"),
+            "only the end of the token shows"
+        );
+
+        // After a restart all of it is still there.
+        let again = open();
+        assert_eq!(again.churchtools("").unwrap().token, "gutes-token-123");
+        assert_eq!(
+            again
+                .members("")
+                .iter()
+                .find(|x| x.id == m.id)
+                .unwrap()
+                .churchtools,
+            Some(11)
+        );
+        let second = ui(&again);
+        person(&second, &m.id, "").unwrap();
+        assert_eq!(again.members("")[0].churchtools, None);
+        second.act("csrf=s&id=&do=ct-remove").unwrap();
+        assert!(again.churchtools("").is_none());
+        drop(server);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
     fn the_proposals_section() {
         use chordwright_server::{Options, Server};
         let root = std::env::temp_dir().join(format!("cw-panel-prop-{}", std::process::id()));
@@ -2687,6 +2907,7 @@ mod tests {
             ai: None,
             plays: true,
             arrangements: vec![],
+            churchtools: None,
         };
         let mut list = vec![
             m("zoe", Can::Read),

@@ -1,5 +1,11 @@
 # Changelog
 
+## 2.10.0
+
+- ChurchTools: Der Server holt Termine, wer dabei Dienst hat, Ablaufpläne und Songs aus ChurchTools. In der Web-UI unter **ChurchTools** trägst du die Adresse deiner Instanz und den Login-Token eines ChurchTools-Benutzers ein. Beim Speichern prüft der Server, wem der Token gehört. Der Token bleibt auf dem Server, geht nie an die App und nie in eine Sicherung. In ChurchTools liest der Server nur.
+- Wer ist wer: Unter **ChurchTools** bekommt jeder Musiker die Nummer seiner Person in ChurchTools. Dann weiß die App bei jedem Termin, welcher Musiker Dienst hat, und jeder Musiker findet seine Termine.
+- Für die App: `GET /api/churchtools` (wem der Token gehört), `/api/churchtools/events?from=&to=&person=`, `/api/churchtools/events/:id` (mit Ablaufplan), `/api/churchtools/songs?q=`, `/api/churchtools/songs/:id`, `/api/churchtools/file?url=` (Dateien eines Arrangements) und `/api/churchtools/mine`. Alles für dich und wer **Sets bearbeiten** darf oder mehr, sonst nur `mine`. Jeder Dienst trägt `member`, wenn ein Musiker diese Person ist. `/api/health` sagt `churchtools: true`; `/api/band` und `/api/health` (`member`) nennen die Person als `churchtools`.
+
 ## 2.9.0
 
 - Abläufe: Jeder Musiker kann eigene Abläufe anlegen, ändern und löschen, auch mit **Nur lesen**. Standardabläufe bleiben bei denen, die **Songs und Sets bearbeiten** dürfen. Du kannst sie aber einzelnen Musikern freigeben, in der Web-UI unter **Band** → **Darf diese Standardabläufe ändern**. Der Server prüft bei jedem Speichern, dass sonst nichts an den Song-Einstellungen geändert wird.

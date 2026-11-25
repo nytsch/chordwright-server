@@ -28,6 +28,8 @@
 mod assistant;
 mod backups;
 mod certs;
+mod churchtools;
+mod outbound;
 
 pub use assistant::{
     looks_like_key as looks_like_assistant_key, Assistant, Tally as AssistantTally,
@@ -35,6 +37,9 @@ pub use assistant::{
 };
 
 pub use certs::{certificate_names, ensure_own_certificate, Own};
+pub use churchtools::{
+    clean_url as clean_churchtools_url, person_name as churchtools_person_name, ChurchTools,
+};
 pub use pairing::new_code as new_pairing_code;
 pub use site::{Files, Site};
 mod describe;
@@ -262,6 +267,9 @@ pub struct Member {
     /// Their own arrangements (`owner` = their id) they change anyway.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub arrangements: Vec<String>,
+    /// The id of the person they are in ChurchTools (churchtools.rs).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub churchtools: Option<u64>,
 }
 
 fn plays_by_default() -> bool {
@@ -690,6 +698,39 @@ impl Hub {
         };
         shared.desk.set(assistant);
         true
+    }
+
+    /// ChurchTools for `/i/<id>` (None: the server's own) from now on; None
+    /// turns it off. False when there is no such library.
+    pub fn set_churchtools(&self, id: Option<&str>, churchtools: Option<ChurchTools>) -> bool {
+        let Some(shared) = self.shared(id) else {
+            return false;
+        };
+        *shared
+            .churchtools
+            .write()
+            .unwrap_or_else(|e| e.into_inner()) = churchtools;
+        true
+    }
+
+    /// Whom `config`'s token belongs to in ChurchTools (the person, as
+    /// ChurchTools has it), or why not. Waits for the answer: for the web UI,
+    /// never from inside the server's runtime.
+    pub fn churchtools_whoami(&self, config: &ChurchTools) -> Result<serde_json::Value, String> {
+        self.0
+            .runtime
+            .block_on(churchtools::whoami(config))
+            .map_err(|no| {
+                match (no.status, no.body["reason"].as_str()) {
+                    (_, Some("token")) => "ChurchTools nimmt den Token nicht an.",
+                    (_, Some("unreachable")) => {
+                        "ChurchTools ist unter dieser Adresse nicht erreichbar."
+                    }
+                    (404, _) => "Unter dieser Adresse antwortet kein ChurchTools.",
+                    _ => "ChurchTools hat nicht geantwortet, wie es sollte.",
+                }
+                .to_string()
+            })
     }
 
     /// This month's questions and tokens per asker, from the log.
@@ -1183,6 +1224,7 @@ fn library_state(
         usage: Usage::open(&root),
         members: RwLock::new(Vec::new()),
         desk: Arc::new(assistant::Desk::open(&root)),
+        churchtools: RwLock::new(None),
         stage: Stage::new(move |snapshot| stage_listeners.send(http::stage_line(&snapshot))),
         listeners,
         self_writes: Mutex::new(HashMap::new()),

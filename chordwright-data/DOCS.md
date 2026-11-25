@@ -75,6 +75,15 @@ Der Ablaufplaner der App kann Claude nach der Form der Originalaufnahme fragen. 
 
 Ist am Server ein Schlüssel hinterlegt, fragt die App nur noch über ihn. Ohne Server (Bibliothek nur auf dem Gerät) bleibt es beim eigenen Schlüssel in der App.
 
+### ChurchTools
+
+Der Server kann Termine, Dienste und Songs aus ChurchTools holen. Dafür trägst du in der Web-UI unter **ChurchTools** die Adresse deiner Instanz ein (z. B. `gemeinde.church.tools`) und den Login-Token eines ChurchTools-Benutzers. Den Token findest du in ChurchTools beim Benutzer unter **Berechtigungen → Login-Token**. Beim Speichern fragt der Server ChurchTools, wem der Token gehört, und zeigt diesen Namen an. Nimmt ChurchTools den Token nicht an, wird nichts gespeichert.
+
+- **Am besten ein eigener Benutzer** für Chordwright, der in ChurchTools nur lesen darf, was die Band braucht: Termine mit Diensten, Ablaufpläne, Songs. Was der Benutzer in ChurchTools nicht sehen darf, sieht auch die App nicht.
+- **Der Token bleibt auf dem Server** (in `/data/instances.json`). Er geht nie an die App und nie in eine Sicherung. Die Web-UI zeigt nur seine letzten vier Zeichen. Der Server liest in ChurchTools nur, er schreibt dort nichts.
+- **Wer ist wer:** Unter **ChurchTools** trägst du bei jedem Musiker die Nummer seiner Person in ChurchTools ein (die Zahl in der Adresse, wenn du die Person in ChurchTools öffnest). Dann weiß die App bei jedem Termin, welcher Musiker Dienst hat, und jeder Musiker findet seine Termine.
+- **Wer was sieht:** Du und alle, die unter **Band** Sets bearbeiten dürfen (oder mehr), sehen alle Termine, Dienste und Songs. Alle anderen sehen nur die Termine, bei denen sie selbst eingeteilt sind.
+
 ### Was die Web-UI zeigt
 
 Oben jede Bibliothek mit Songs, Sets, gerade verbundenen Geräten und der letzten Änderung. Zur gewählten außerdem die Größe, die Sicherungen, die letzten Änderungen (wer was wann) und offene Bühnen samt dem, der gerade leitet.

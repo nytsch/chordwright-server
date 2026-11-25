@@ -35,6 +35,7 @@ fn member(id: &str, can: Can) -> Member {
         ai: None,
         plays: true,
         arrangements: vec![],
+        churchtools: None,
         can,
     }
 }

@@ -15,6 +15,9 @@
 //! (`Assistant` im Server), samt Tageslimit; er geht nie an die App und nie
 //! in eine Sicherung.
 //!
+//! Ebenso die Anbindung an ChurchTools (`ChurchTools` im Server): Adresse
+//! und Login-Token, und bei jedem Musiker, welche Person er dort ist.
+//!
 //! Entfernen nimmt sie nur aus dem Dienst; der Ordner bleibt. Wer später eine
 //! mit demselben Namen anlegt, bekommt ihn samt Songs zurück.
 
@@ -22,7 +25,8 @@ use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
 use chordwright_server::{
-    is_instance_id, looks_like_assistant_key, Assistant, Can, Hub, Library, Member, ROLES,
+    is_instance_id, looks_like_assistant_key, Assistant, Can, ChurchTools, Hub, Library, Member,
+    ROLES,
 };
 use serde::{Deserialize, Serialize};
 
@@ -37,6 +41,8 @@ pub struct Entry {
     pub members: Vec<Member>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub assistant: Option<Assistant>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub churchtools: Option<ChurchTools>,
 }
 
 #[derive(Serialize, Deserialize, Default)]
@@ -48,6 +54,9 @@ struct File {
     /// Die KI der Hauptbibliothek.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     assistant: Option<Assistant>,
+    /// ChurchTools der Hauptbibliothek.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    churchtools: Option<ChurchTools>,
 }
 
 const DAY_MS: i64 = 24 * 60 * 60 * 1000;
@@ -65,6 +74,8 @@ pub struct Registry {
     main_members: Mutex<Vec<Member>>,
     /// Ebenso.
     main_assistant: Mutex<Option<Assistant>>,
+    /// Ebenso.
+    main_churchtools: Mutex<Option<ChurchTools>>,
 }
 
 /// Aus einem Namen eine id: klein, Umlaute ausgeschrieben, alles andere `-`.
@@ -146,6 +157,7 @@ impl Registry {
             .unwrap_or_default();
         hub.set_members(None, saved.members.clone());
         hub.set_assistant(None, saved.assistant.clone());
+        hub.set_churchtools(None, saved.churchtools.clone());
         let list = saved
             .instances
             .into_iter()
@@ -161,6 +173,7 @@ impl Registry {
             list: Mutex::new(Vec::new()),
             main_members: Mutex::new(saved.members),
             main_assistant: Mutex::new(saved.assistant),
+            main_churchtools: Mutex::new(saved.churchtools),
         };
         for entry in &list {
             if let Err(e) = registry.serve(entry) {
@@ -188,6 +201,8 @@ impl Registry {
         self.hub.set_members(Some(&entry.id), entry.members.clone());
         self.hub
             .set_assistant(Some(&entry.id), entry.assistant.clone());
+        self.hub
+            .set_churchtools(Some(&entry.id), entry.churchtools.clone());
         Ok(())
     }
 
@@ -198,10 +213,12 @@ impl Registry {
     fn save(&self, list: &[Entry]) -> Result<(), String> {
         let members = self.main_members().clone();
         let assistant = self.main_assistant().clone();
+        let churchtools = self.main_churchtools().clone();
         let text = serde_json::to_string_pretty(&File {
             instances: list.to_vec(),
             members,
             assistant,
+            churchtools,
         })
         .map_err(|e| e.to_string())?;
         let tmp = self.file.with_extension("json.tmp");
@@ -237,6 +254,7 @@ impl Registry {
             token: new_token()?,
             members: Vec::new(),
             assistant: None,
+            churchtools: None,
         };
         self.serve(&entry)?;
         list.push(entry.clone());
@@ -345,6 +363,7 @@ impl Registry {
                 plays,
                 ai: None,
                 arrangements: Vec::new(),
+                churchtools: None,
             };
             members.push(member.clone());
             Ok(member)
@@ -553,6 +572,80 @@ impl Registry {
         self.hub
             .set_assistant((!lib.is_empty()).then_some(lib), assistant);
         Ok(())
+    }
+
+    fn main_churchtools(&self) -> std::sync::MutexGuard<'_, Option<ChurchTools>> {
+        self.main_churchtools
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// ChurchTools einer Bibliothek; `lib` leer: das der Hauptbibliothek.
+    pub fn churchtools(&self, lib: &str) -> Option<ChurchTools> {
+        if lib.is_empty() {
+            return self.main_churchtools().clone();
+        }
+        let list = self.lock();
+        list.iter()
+            .find(|e| e.id == lib)
+            .and_then(|e| e.churchtools.clone())
+    }
+
+    /// Adresse und Token, wie sie sind (geprüft hat sie der Aufrufer); None: aus.
+    pub fn set_churchtools(
+        &self,
+        lib: &str,
+        churchtools: Option<ChurchTools>,
+    ) -> Result<(), String> {
+        let mut list = self.lock();
+        let old = if lib.is_empty() {
+            self.main_churchtools().clone()
+        } else {
+            list.iter()
+                .find(|e| e.id == lib)
+                .ok_or("Diese Bibliothek gibt es nicht.")?
+                .churchtools
+                .clone()
+        };
+        let put = |list: &mut Vec<Entry>, c: Option<ChurchTools>| {
+            if lib.is_empty() {
+                *self.main_churchtools() = c;
+            } else if let Some(e) = list.iter_mut().find(|e| e.id == lib) {
+                e.churchtools = c;
+            }
+        };
+        put(&mut list, churchtools.clone());
+        if let Err(e) = self.save(&list) {
+            put(&mut list, old);
+            return Err(e);
+        }
+        self.hub
+            .set_churchtools((!lib.is_empty()).then_some(lib), churchtools);
+        Ok(())
+    }
+
+    /// Welche Person ein Musiker in ChurchTools ist; None: keine.
+    pub fn set_member_churchtools(
+        &self,
+        lib: &str,
+        id: &str,
+        person: Option<u64>,
+    ) -> Result<(), String> {
+        self.change_members(lib, |members| {
+            if let Some(p) = person {
+                if let Some(other) = members
+                    .iter()
+                    .find(|m| m.id != id && m.churchtools == Some(p))
+                {
+                    return Err(format!(
+                        "{} ist schon diese Person in ChurchTools.",
+                        other.name
+                    ));
+                }
+            }
+            find_member(members, id)?.churchtools = person;
+            Ok(())
+        })
     }
 
     /// Nimmt sie aus dem Dienst; der Ordner bleibt.

@@ -28,17 +28,15 @@
 use std::collections::HashMap;
 use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use bytes::Bytes;
-use http_body_util::{BodyExt, Full};
 use hyper::Request;
-use hyper_util::rt::TokioIo;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use tokio::net::TcpStream;
 
+use crate::outbound;
 use crate::util::{iso, now_ms};
 
 pub const MODEL: &str = "claude-opus-5-5";
@@ -482,120 +480,28 @@ pub async fn ask(desk: Arc<Desk>, who: Asker, body: Value) -> Result<Value, Refu
     }
 }
 
-/// `scheme://host:port/prefix`, taken apart.
-fn endpoint_of(url: &str) -> Result<(bool, String, u16, String), String> {
-    let (tls, rest) = match url.split_once("://") {
-        Some(("https", rest)) => (true, rest),
-        Some(("http", rest)) => (false, rest),
-        _ => return Err(format!("{url}: not an http(s) address")),
-    };
-    let (authority, prefix) = rest.split_once('/').map_or((rest, ""), |(a, p)| (a, p));
-    let (host, port) = match authority.rsplit_once(':') {
-        Some((h, p)) => (h, p.parse().map_err(|_| format!("{url}: bad port"))?),
-        None => (authority, if tls { 443 } else { 80 }),
-    };
-    let prefix = prefix.trim_end_matches('/');
-    let prefix = if prefix.is_empty() {
-        String::new()
-    } else {
-        format!("/{prefix}")
-    };
-    Ok((tls, host.to_string(), port, prefix))
-}
-
-fn tls_connector() -> tokio_rustls::TlsConnector {
-    static CONFIG: OnceLock<Arc<rustls::ClientConfig>> = OnceLock::new();
-    let config = CONFIG.get_or_init(|| {
-        let roots = rustls::RootCertStore {
-            roots: webpki_roots::TLS_SERVER_ROOTS.to_vec(),
-        };
-        let mut config = rustls::ClientConfig::builder_with_provider(Arc::new(
-            rustls::crypto::ring::default_provider(),
-        ))
-        .with_safe_default_protocol_versions()
-        .expect("default protocol versions")
-        .with_root_certificates(roots)
-        .with_no_client_auth();
-        config.alpn_protocols = vec![b"http/1.1".to_vec()];
-        Arc::new(config)
-    });
-    tokio_rustls::TlsConnector::from(config.clone())
-}
-
 /// One POST to /v1/messages: the status and the JSON that came back.
 async fn call(config: &Assistant, body: &Value) -> Result<(u16, Value), String> {
-    let (tls, host, port, prefix) = endpoint_of(config.endpoint.as_deref().unwrap_or(ENDPOINT))?;
-    let request = Request::post(format!("{prefix}/v1/messages"))
-        .header("host", &host)
+    let request = Request::post("/")
         .header("x-api-key", &config.key)
         .header("anthropic-version", "2023-06-01")
         .header("anthropic-beta", "server-side-fallback-2026-07-01")
-        .header("content-type", "application/json")
-        .body(Full::new(Bytes::from(body.to_string())))
-        .map_err(|e| e.to_string())?;
-    let work = async {
-        let stream = TcpStream::connect((host.as_str(), port))
-            .await
-            .map_err(|e| e.to_string())?;
-        let response = if tls {
-            let name =
-                rustls_pki_types::ServerName::try_from(host.clone()).map_err(|e| e.to_string())?;
-            let stream = tls_connector()
-                .connect(name, stream)
-                .await
-                .map_err(|e| e.to_string())?;
-            send(TokioIo::new(stream), request).await?
-        } else {
-            send(TokioIo::new(stream), request).await?
-        };
-        Ok::<_, String>(response)
-    };
-    tokio::time::timeout(CALL_TIMEOUT, work)
-        .await
-        .map_err(|_| "timed out".to_string())?
-}
-
-async fn send<T>(io: TokioIo<T>, request: Request<Full<Bytes>>) -> Result<(u16, Value), String>
-where
-    T: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static,
-{
-    let (mut sender, conn) = hyper::client::conn::http1::handshake(io)
-        .await
-        .map_err(|e| e.to_string())?;
-    tokio::spawn(conn);
-    let response = sender
-        .send_request(request)
-        .await
-        .map_err(|e| e.to_string())?;
-    let status = response.status().as_u16();
-    let bytes = response
-        .into_body()
-        .collect()
-        .await
-        .map_err(|e| e.to_string())?
-        .to_bytes();
-    Ok((
-        status,
-        serde_json::from_slice(&bytes).unwrap_or(Value::Null),
-    ))
+        .header("content-type", "application/json");
+    let reply = outbound::fetch(
+        config.endpoint.as_deref().unwrap_or(ENDPOINT),
+        request,
+        "/v1/messages",
+        Bytes::from(body.to_string()),
+        CALL_TIMEOUT,
+        32 << 20,
+    )
+    .await?;
+    Ok((reply.status, reply.json()))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn endpoints() {
-        assert_eq!(
-            endpoint_of("https://api.anthropic.com").unwrap(),
-            (true, "api.anthropic.com".into(), 443, String::new())
-        );
-        assert_eq!(
-            endpoint_of("http://127.0.0.1:9/x/").unwrap(),
-            (false, "127.0.0.1".into(), 9, "/x".into())
-        );
-        assert!(endpoint_of("ftp://x").is_err());
-    }
 
     #[test]
     fn keys_and_reasons() {
