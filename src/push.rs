@@ -51,6 +51,8 @@ const STALE_MS: i64 = 90 * 24 * 3600 * 1000;
 const MESSAGE_CHARS: usize = 400;
 const RELAY_TIMEOUT: Duration = Duration::from_secs(20);
 const OWNER: &str = "owner";
+/// After a failed sign-up at the relay, this long until the next try.
+const RETRY_MS: i64 = 10 * 60 * 1000;
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 #[serde(rename_all = "camelCase")]
@@ -97,6 +99,8 @@ pub struct Push {
     waiting: Mutex<HashMap<String, (u64, Note)>>,
     generation: AtomicU64,
     joining: tokio::sync::Mutex<()>,
+    /// When the last sign-up failed (ms): the next waits `RETRY_MS`.
+    failed_at: std::sync::atomic::AtomicI64,
 }
 
 impl Push {
@@ -110,6 +114,7 @@ impl Push {
             waiting: Mutex::new(HashMap::new()),
             generation: AtomicU64::new(0),
             joining: tokio::sync::Mutex::new(()),
+            failed_at: std::sync::atomic::AtomicI64::new(0),
         }
     }
 
@@ -211,6 +216,17 @@ pub async fn ensure_account(s: &Arc<Shared>) -> Option<String> {
     if let Some(id) = s.push.server_id() {
         return Some(id);
     }
+    if now_ms() - s.push.failed_at.load(Ordering::Relaxed) < RETRY_MS {
+        return None;
+    }
+    let id = sign_up(s, relay).await;
+    if id.is_none() {
+        s.push.failed_at.store(now_ms(), Ordering::Relaxed);
+    }
+    id
+}
+
+async fn sign_up(s: &Arc<Shared>, relay: String) -> Option<String> {
     match post_json(&relay, "/v1/server", &[], "{}".into(), RELAY_TIMEOUT).await {
         Ok((200, reply)) => {
             let (Some(id), Some(secret)) = (reply["serverId"].as_str(), reply["secret"].as_str())
