@@ -97,6 +97,7 @@ fn member(id: &str) -> Member {
         plays: true,
         arrangements: vec![],
         ai: None,
+        churchtools: None,
     }
 }
 

@@ -718,6 +718,7 @@ mod tests {
             plays,
             arrangements: vec![],
             ai: None,
+            churchtools: None,
         }
     }
 
