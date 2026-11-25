@@ -35,6 +35,7 @@ pub use assistant::{
     looks_like_key as looks_like_assistant_key, Assistant, Tally as AssistantTally,
     Usage as AssistantUsage, LENGTH_DAILY, MODEL as ASSISTANT_MODEL,
 };
+pub use push::{open as open_push, DEFAULT_RELAY as DEFAULT_PUSH_RELAY, KINDS as PUSH_KINDS};
 
 pub use certs::{ca_pin, ca_pin_of, certificate_names, ensure_own_certificate, Own};
 pub use churchtools::{
@@ -48,6 +49,7 @@ mod journal;
 mod messages;
 mod pairing;
 mod proposals;
+mod push;
 mod site;
 mod stage;
 mod store;
@@ -129,6 +131,9 @@ pub struct Options {
     /// Every other route is 404 `stage only` — for a laptop on stage whose
     /// token hands out no library.
     pub stage_only: bool,
+    /// Push notifications through this relay (push.rs); None: off. Also for
+    /// the libraries added later.
+    pub push_relay: Option<String>,
 }
 
 impl Default for Options {
@@ -152,6 +157,7 @@ impl Default for Options {
             backup_every: 24.0,
             backup_keep: 14,
             stage_only: false,
+            push_relay: None,
         }
     }
 }
@@ -576,6 +582,7 @@ struct HubState {
     instances: RwLock<BTreeMap<String, Instance>>,
     runtime: tokio::runtime::Handle,
     ca_der: Option<Vec<u8>>,
+    push_relay: Mutex<Option<String>>,
     started: i64,
 }
 
@@ -673,6 +680,13 @@ impl Hub {
             None,
             false,
         )?;
+        shared.push.set_relay(
+            self.0
+                .push_relay
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .clone(),
+        );
         instances.insert(id.to_string(), Instance::open(shared, &self.0.runtime));
         Ok(())
     }
@@ -699,6 +713,20 @@ impl Hub {
 
     /// The assistant of `/i/<id>` (None: the server's own) from now on;
     /// None turns it off. False when there is no such library.
+    /// Push through `relay` for every library served, from now on; None: off.
+    pub fn set_push(&self, relay: Option<String>) {
+        *self.0.push_relay.lock().unwrap_or_else(|e| e.into_inner()) = relay.clone();
+        self.0.main.push.set_relay(relay.clone());
+        for instance in self.instances().values() {
+            instance.shared.push.set_relay(relay.clone());
+        }
+    }
+
+    /// How long edits to a set are gathered before they go out (tests).
+    pub fn set_push_settle(&self, settle: Duration) {
+        self.0.main.push.set_settle(settle);
+    }
+
     pub fn set_assistant(&self, id: Option<&str>, assistant: Option<Assistant>) -> bool {
         let shared = match id {
             None => self.0.main.clone(),
@@ -1109,6 +1137,7 @@ fn start(mut o: Options) -> Result<Server, String> {
         o.stage_only,
     )?;
     shared.set_members(o.members.clone());
+    shared.push.set_relay(o.push_relay.clone());
 
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .worker_threads(2)
@@ -1155,6 +1184,7 @@ fn start(mut o: Options) -> Result<Server, String> {
         instances: RwLock::new(BTreeMap::new()),
         runtime: runtime.handle().clone(),
         ca_der: shared.ca_der.clone(),
+        push_relay: Mutex::new(o.push_relay.clone()),
         started: util::now_ms(),
     }));
     runtime.spawn(serve(main, tls, hub.clone()));
@@ -1237,6 +1267,7 @@ fn library_state(
         journal: Journal::open(&root),
         proposals: proposals::Proposals::new(&root),
         messages: messages::Messages::new(&root),
+        push: push::Push::new(&root),
         usage: Usage::open(&root),
         members: RwLock::new(Vec::new()),
         desk: Arc::new(assistant::Desk::open(&root)),

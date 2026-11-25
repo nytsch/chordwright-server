@@ -389,6 +389,41 @@ DELETE /api/messages/:id                               → 204   (its sender, or
 - **On `/api/events`** as `event: message` with `{ id, removed }`, on a new
   one, a read and a removal. `/api/health` says `messages: true`.
 
+## Push notifications
+
+With `--push-relay <url>` (the add-on: on, through `https://push.chordwright.app`)
+the band's phones are told when they were put into a set, a set they play in
+changed, a message came for them, or a new set asks whether they can — also
+with the app closed. Nobody but this server and the phone reads what:
+
+```
+GET    /api/health             → … push: { relay, serverId }   (once signed up at the relay)
+PUT    /api/push/:device       ← { handle, key, kinds? }  → { device, kinds } | 400 | 404 (push off)
+DELETE /api/push/:device                                  → 204 | 404   (its musician, or the owner)
+```
+
+- **The phone** gets a `handle` from the relay for its APNs token, bound to
+  `serverId`, makes a random 32-byte `key` (base64) and sends both here.
+  `device` is random per installation (8–64 of `A-Za-z0-9_-`); `kinds` any of
+  `assigned`, `changed`, `message`, `day` (all by default).
+- **What is sent** is `{ v: 1, kind, … }` sealed with AES-256-GCM under `key`
+  (nonce ‖ ciphertext ‖ tag, base64, the device as AAD): `assigned`
+  `{ setId, name, day, roles }`, `changed` `{ setId, name, day }`, `message`
+  `{ id, from, text }` (400 characters), `day` `{ day, names }`. The phone's
+  notification extension opens it and writes the text in its own language.
+- **Who:** `assigned` — whoever is newly in a role of an upcoming set (not a
+  draft) in `user/lineups`; `changed` — those in a set whose entry in
+  `user/setlists` changed, gathered for 5 minutes per set; `day` — players a
+  set newly asks (as the app's `asks`) and who have no answer for its day;
+  `message` — its readers, not its sender. Never whoever made the change.
+- **The relay** (`POST /v1/server` once → `{ serverId, secret }`, then
+  `POST /v1/send` `{ serverId, items: [{ handle, enc, collapse }] }` with
+  `x-chordwright-signature: hex(HMAC-SHA256(secret, body))` → `{ results: ["ok" | "gone", …] }`)
+  keeps nothing. A device it calls `gone`, of a musician removed or expired,
+  or not reached for 90 days, is forgotten.
+- **Kept in `.chordwright/push.json`** (and the relay account in
+  `push-relay.json`), outside the library; no backup carries them.
+
 ## Backups
 
 `backups/` holds snapshots of `library/` and `user/` as plain folders, so one

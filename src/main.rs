@@ -1,6 +1,7 @@
 //! chordwright serve, as a program:
 //!
 //!   chordwright-server --dir ./data --port 4174
+//!   chordwright-server --dir ./data --push-relay https://push.chordwright.app
 //!   chordwright-server --addon            the Home Assistant add-on (addon.rs, instances.rs, panel.rs)
 //!
 //! The desktop app does not start this; it runs the library in its own
@@ -90,6 +91,7 @@ fn parse_args(argv: &[String]) -> Args {
                 .map(|k| k.max(1.0) as usize)
                 .unwrap_or(defaults.backup_keep),
             stage_only: flags.contains("stage-only"),
+            push_relay: get("push-relay"),
         },
         addon: flags.contains("addon"),
         ready_json: flags.contains("ready-json"),

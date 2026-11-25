@@ -1,7 +1,7 @@
 # Home-Assistant-Add-on für den Chordwright-Datenserver (chordwright-server --addon).
 # Anleitung: DOCS.md in diesem Ordner, in Home Assistant unter „Dokumentation".
 name: Chordwright Data
-version: "2.11.0"
+version: "2.12.0"
 slug: chordwright_data
 description: Deine Chordwright-Bibliothek als Ordner mit .chordpro-Dateien.
 url: https://github.com/nytsch/chordwright-server
@@ -50,6 +50,10 @@ options:
   # ist (z. B. https://songs.example.org). Siehe Dokumentation.
   tunnel: false
   public_url: ""
+  # Push-Mitteilungen an die Handys der Band, Ende-zu-Ende verschlüsselt über
+  # ein Relay ohne Speicher (leer: das von Chordwright). Siehe Dokumentation.
+  push: true
+  push_relay: ""
 schema:
   token: password?
   ssl: bool
@@ -62,3 +66,5 @@ schema:
   backup_keep: int(1,)
   tunnel: bool?
   public_url: str?
+  push: bool?
+  push_relay: str?
