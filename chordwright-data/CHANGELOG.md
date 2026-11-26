@@ -1,5 +1,11 @@
 # Changelog
 
+## 2.11.0
+
+- QR-Codes in der Web-UI tragen jetzt den Fingerabdruck der eigenen Zertifizierungsstelle (`&pin=`), solange die Verbindung über das Heimnetz geht. Über den Tunnel nicht, dort zeigt Cloudflare ein eigenes Zertifikat. Eine App, die den Fingerabdruck kennt, vertraut genau diesem Server, ohne dass jemand das Zertifikat installiert. Ältere Apps übergehen ihn.
+- Nur die Bühne: Mit `--stage-only` bietet der Server nur die gemeinsame Bühne an (`/api/health`, `/api/time`, `/api/stage…`, `/api/events`, `/api/pair`, `/ca.crt`), alles andere ist 404 `stage only`. Für einen Rechner auf der Bühne ohne Internet, während die Bibliothek woanders liegt. `/api/health` sagt dann `stageOnly: true` und nennt keine Datenbanken.
+- Für Programme, die den Server starten: `lan.pin` in `--ready-json` und `Lan::pin` in der Bibliothek, `ca_pin`/`ca_pin_of` zum Berechnen.
+
 ## 2.10.0
 
 - ChurchTools: Der Server holt Termine, wer dabei Dienst hat, Ablaufpläne und Songs aus ChurchTools. In der Web-UI unter **ChurchTools** trägst du die Adresse deiner Instanz und den Login-Token eines ChurchTools-Benutzers ein. Beim Speichern prüft der Server, wem der Token gehört. Der Token bleibt auf dem Server, geht nie an die App und nie in eine Sicherung. In ChurchTools liest der Server nur.

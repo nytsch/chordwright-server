@@ -25,7 +25,7 @@
 //!   POST   /api/backups/:id/restore → { restored, safety, changed }
 //!   DELETE /api/backups/:id
 //!   POST   /api/pair               → body { code } → { token }, a guest token (pairing.rs) | 403 | 429
-//!   GET    /ca.crt                 → the authority that signed the certificate, as DER
+//!   GET    /ca.crt                 → the authority that signed the certificate, as DER (its SHA-256 is `Lan::pin`)
 //!   GET    /*                      → the app, when the server was given one (site.rs)
 //! ```
 //!
@@ -41,6 +41,10 @@
 //!   GET    /api/band               → { roles, members: [{ id, name, roles }], me }
 //!   POST   /api/assistant          → the AI assistant, with the library's key (assistant.rs)
 //!   GET    /api/churchtools/…      → dates, services and songs from ChurchTools, with the library's token (churchtools.rs)
+//!
+//! Started with `stage_only`, the server answers only /api/health (with
+//! `stageOnly`), /api/time, /api/stage…, /api/events, /api/pair and /ca.crt;
+//! every other route is 404 `stage only`.
 //!
 //! A musician's token (`Member`) opens the same routes to read, and the
 //! stage; it writes only `user/availability.<their id>`, under their name.
@@ -158,6 +162,8 @@ pub struct Shared {
     pub ca_der: Option<Vec<u8>>,
     pub site: Option<Site>,
     pub pairing: Option<Pairing>,
+    /// Only the shared stage (`Options::stage_only`).
+    pub stage_only: bool,
     /// The musicians: each reads, and writes only their answers (`Member`).
     pub members: RwLock<Vec<Member>>,
     /// The assistant: its key and limits, today's counts, the log.
@@ -525,6 +531,26 @@ async fn route(s: Arc<Shared>, req: Request<Incoming>, seen: &mut Seen) -> Respo
                 "assistant": s.desk.config().is_some(),
                 "churchtools": s.churchtools().is_some(),
         });
+        // Only the stage: no library behind this token, and nothing that
+        // would make an app look for one.
+        if s.stage_only {
+            for flag in [
+                "revisions",
+                "backups",
+                "changes",
+                "proposals",
+                "messages",
+                "assistant",
+                "churchtools",
+            ] {
+                health[flag] = json!(false);
+            }
+            health["databases"] = json!([]);
+            health["stageOnly"] = json!(true);
+            if let Some(o) = health.as_object_mut() {
+                o.remove("dir");
+            }
+        }
         // With a token, what it may do — so a musician's app knows who it is
         // and what not to write.
         if !given.is_empty() {
@@ -567,6 +593,9 @@ async fn route(s: Arc<Shared>, req: Request<Incoming>, seen: &mut Seen) -> Respo
     };
     seen.caller = Some(caller(&access));
     let read_only = || error(403, "read only");
+    if s.stage_only && !matches!(part(1), Some("events" | "time" | "stage")) {
+        return error(404, "stage only");
+    }
 
     match part(1) {
         Some("events") => {

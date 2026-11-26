@@ -145,8 +145,16 @@ wrote it.
 | `--site` | none | a folder served under `/` (the app for a browser); unknown paths without a dot get its `index.html` |
 | `--members` | none | a JSON file with the musicians, `[{ id, name, token, roles, until, can }]` (see [The band](#the-band)) |
 | `--pairing` | none | a code (or `auto` for six random digits) a browser trades for a guest token at `POST /api/pair` |
+| `--stage-only` | off | only the shared stage: `/api/health` (with `stageOnly: true`, no databases), `/api/time`, `/api/stage…`, `/api/events`, `/api/pair`, `/ca.crt`; everything else is 404 `stage only`. For a laptop on stage without internet, while the library lives elsewhere |
 
 `--port 0` lets the system pick a free port; `--ready-json` says which.
+
+With a CA (`--own-ca`, `--ca-file`) and a host beyond loopback, `--ready-json`
+gives `lan.pin` and the banner a `pin` line: SHA-256 over the CA certificate
+(DER, as `/ca.crt` serves it), base64url without padding. A QR code carries it
+as `&pin=`, and an app that pins it trusts exactly this authority for that
+server, without anyone installing the CA. The pin stays as long as the CA
+does (ten years); a new address only reissues the server certificate.
 
 Shared in a network the way the desktop app does it — https outside under
 this machine's names (`<name>.local`, its IPv4 addresses), its own CA, and http
@@ -204,7 +212,7 @@ GET    /api/:db/record/:key?quiet=1  → a miss as 200 { value: null, rev: null,
 PUT    /api/:db/record/:key       ← the raw value string            → 204, ETag
 DELETE /api/:db/record/:key                                          → 204
 GET    /api/events                → SSE: {"db","key","client"} per change
-GET    /ca.crt                    → the CA certificate, DER   (public; only with --ca-file)
+GET    /ca.crt                    → the CA certificate, DER   (public; only with --ca-file or --own-ca)
 GET    /api/backups               → { backups: [{ id, createdAt, reason, songs, sets, bytes }], everyHours, keep }
 POST   /api/backups               → a snapshot now                   → 201 { id, … }
 POST   /api/backups/:id/restore   → { restored, safety }
