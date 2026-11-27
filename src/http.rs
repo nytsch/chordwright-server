@@ -81,6 +81,7 @@ use crate::journal::{Journal, Written};
 use crate::messages::{self, Messages};
 use crate::pairing::{Attempt, Pairing};
 use crate::proposals::{self, Author, Proposals, Status};
+use crate::push;
 use crate::site::{self, Site};
 use crate::stage::{clean_room, Answer, Stage};
 use crate::store::{is_database, is_valid_key, key_for_path, Expect, Outcome, Store, DATABASES};
@@ -177,6 +178,8 @@ pub struct Shared {
     pub proposals: Proposals,
     /// Messages between the band and those who lead it (messages.rs).
     pub messages: Messages,
+    /// The band's phones and the relay to reach them (push.rs).
+    pub push: crate::push::Push,
     /// Who used the library, and how much (usage.rs).
     pub usage: Usage,
     pub stage: Stage,
@@ -571,6 +574,17 @@ async fn route(s: Arc<Shared>, req: Request<Incoming>, seen: &mut Seen) -> Respo
                 health["assistantQuota"] = s.desk.quota(&s.asker(&who));
             }
         }
+        // Push: the relay and the id a device binds its handle to. Until the
+        // relay has signed us up, nothing — the sign-up runs on its own.
+        if let Some(relay) = s.push.relay() {
+            match s.push.server_id() {
+                Some(id) => health["push"] = json!({ "relay": relay, "serverId": id }),
+                None => {
+                    let s = s.clone();
+                    tokio::spawn(async move { push::ensure_account(&s).await });
+                }
+            }
+        }
         return send(200, health);
     }
     if part(1) == Some("pair") && parts.len() == 2 {
@@ -664,6 +678,7 @@ async fn route(s: Arc<Shared>, req: Request<Incoming>, seen: &mut Seen) -> Respo
         Some("churchtools") => return error(405, "method not allowed"),
         Some("proposals") => return proposals_route(&s, req, &parts[2..], &access).await,
         Some("messages") => return messages_route(&s, req, &parts[2..], &access).await,
+        Some("push") => return push_route(&s, req, &parts[2..], &access).await,
         Some("backups") if access.member().is_some() => return read_only(),
         Some("backups") => return backups(&s, req, &parts[2..]).await,
         Some("changes") if parts.len() == 2 && method == Method::GET => {
@@ -826,6 +841,52 @@ async fn route(s: Arc<Shared>, req: Request<Incoming>, seen: &mut Seen) -> Respo
                 send(412, json!({ "value": current.value, "rev": current.rev }))
             }
             Ok(Outcome::Done { rev, before, after }) => {
+                if db == "user" && (key == "lineups" || key == "setlists") {
+                    let by = access
+                        .member()
+                        .map_or("owner".to_string(), |m| m.id.clone());
+                    let (b, a, k) = (before.clone(), after.clone(), key.clone());
+                    let notes = blocking(&s, move |s| {
+                        let today = push::today();
+                        let read = |key: &str| {
+                            s.store
+                                .read_versioned("user", key)
+                                .value
+                                .and_then(|t| serde_json::from_str::<Value>(&t).ok())
+                                .map(|v| match v {
+                                    Value::Object(mut m) if m.contains_key("data") => {
+                                        m.remove("data").unwrap_or(Value::Null)
+                                    }
+                                    other => other,
+                                })
+                                .unwrap_or(Value::Null)
+                        };
+                        if k == "lineups" {
+                            push::after_lineups(
+                                b.as_deref(),
+                                a.as_deref(),
+                                &read("setlists"),
+                                &by,
+                                &today,
+                            )
+                        } else {
+                            let answered = |member: &str, day: &str| {
+                                !read(&format!("availability.{member}"))[day].is_null()
+                            };
+                            push::after_setlists(
+                                b.as_deref(),
+                                a.as_deref(),
+                                &read("lineups"),
+                                &s.members(),
+                                &answered,
+                                &by,
+                                &today,
+                            )
+                        }
+                    })
+                    .await;
+                    push::notify(&s, notes);
+                }
                 let titles = std::cell::OnceCell::new();
                 let title = |id: &str| {
                     titles
@@ -1203,10 +1264,11 @@ async fn messages_route(
                 Ok(b) => serde_json::from_slice::<Value>(&b.to_bytes()).unwrap_or(Value::Null),
                 Err(_) => return error(413, "too large"),
             };
-            done(
-                blocking(s, move |s| messages::create(s, &who, &body)).await,
-                201,
-            )
+            let made = blocking(s, move |s| messages::create(s, &who, &body)).await;
+            if let Ok(message) = &made {
+                push::notify(s, push::after_message(message, &s.members()));
+            }
+            done(made, 201)
         }
         (2, Some("read"), Some(id)) if method == Method::POST => done(
             blocking(s, move |s| messages::mark_read(s, &who, &id)).await,
@@ -1220,5 +1282,44 @@ async fn messages_route(
         }
         (0 | 1, _, _) | (2, Some("read"), _) => error(405, "method not allowed"),
         _ => error(404, "not found"),
+    }
+}
+
+/// `/api/push/<device>`: PUT `{ handle, key, kinds? }` signs a phone up for
+/// its musician (the owner's token: `owner`), DELETE signs it off.
+async fn push_route(
+    s: &Arc<Shared>,
+    req: Request<Incoming>,
+    rest: &[String],
+    access: &Access,
+) -> Response<Body> {
+    let method = req.method().clone();
+    let member = access
+        .member()
+        .map_or("owner".to_string(), |m| m.id.clone());
+    let Some(device) = rest
+        .first()
+        .and_then(|d| decode_component(d))
+        .filter(|_| rest.len() == 1)
+    else {
+        return error(404, "not found");
+    };
+    match method {
+        Method::PUT => {
+            let limited = http_body_util::Limited::new(req.into_body(), 16 << 10);
+            let body = match limited.collect().await {
+                Ok(b) => serde_json::from_slice::<Value>(&b.to_bytes()).unwrap_or(Value::Null),
+                Err(_) => return error(413, "too large"),
+            };
+            match blocking(s, move |s| push::register(s, &member, &device, &body)).await {
+                Ok(body) => send(200, body),
+                Err(r) => error(r.status, &r.message),
+            }
+        }
+        Method::DELETE => match blocking(s, move |s| push::unregister(s, &member, &device)).await {
+            Ok(()) => respond(204, None, &[]),
+            Err(r) => error(r.status, &r.message),
+        },
+        _ => error(405, "method not allowed"),
     }
 }

@@ -1,5 +1,10 @@
 # Changelog
 
+## 2.12.0
+
+- Push-Mitteilungen: Die iPhone-App kann einem Musiker auch bei geschlossener App melden, dass er eingeteilt wurde, ein Set mit ihm geändert wurde (gesammelt über 5 Minuten), eine Nachricht für ihn da ist oder ein neuer Termin ihn fragt. Der Inhalt ist Ende-zu-Ende verschlüsselt: Nur das Add-on und das Handy lesen ihn, das Relay `push.chordwright.app` und Apple sehen nur einen Platzhalter. Neue Optionen `push` (an) und `push_relay`.
+- Für die App: `PUT`/`DELETE /api/push/:device`, `/api/health` sagt `push: { relay, serverId }`. Die Handys liegen in `.chordwright/push.json` und gehen in keine Sicherung.
+
 ## 2.11.0
 
 - QR-Codes in der Web-UI tragen jetzt den Fingerabdruck der eigenen Zertifizierungsstelle (`&pin=`), solange die Verbindung über das Heimnetz geht. Über den Tunnel nicht, dort zeigt Cloudflare ein eigenes Zertifikat. Eine App, die den Fingerabdruck kennt, vertraut genau diesem Server, ohne dass jemand das Zertifikat installiert. Ältere Apps übergehen ihn.

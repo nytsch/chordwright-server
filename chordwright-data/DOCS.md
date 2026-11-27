@@ -144,6 +144,8 @@ Die Zertifizierungsstelle bleibt dieselbe, solange du das Add-on nicht deinstall
 | `hostnames` | leer | Weitere Namen oder Adressen fürs Zertifikat, z. B. `ha.fritz.box` |
 | `tunnel` | aus | Zusätzlich http ohne Zertifikat auf Port 4175, für einen Tunnel (siehe [Von unterwegs](#von-unterwegs-tunnel-mit-cloudflared)) |
 | `public_url` | leer | Wo die Bibliothek über den Tunnel erreichbar ist, z. B. `https://songs.example.org`; steht in den QR-Codes der Musiker |
+| `push` | an | Push-Mitteilungen an die Handys der Band (siehe [Push-Mitteilungen](#push-mitteilungen)) |
+| `push_relay` | leer | Ein eigenes Relay statt `https://push.chordwright.app` |
 
 Den Port änderst du unter **Netzwerk**. In der App trägst du dann diesen Port ein.
 
@@ -167,6 +169,14 @@ Damit die Band auch von zu Hause an die Bibliothek kommt, ohne Portfreigabe am R
 Über den Tunnel gilt dein eigener Token genauso — du kannst dich also auch unterwegs mit vollen Rechten verbinden. Halte ihn deshalb für dich; jeder Musiker bekommt nur seinen. Beide sind lange Zufallszahlen, die sich nicht erraten lassen.
 
 Port 4175 ist im Heimnetz ohne https erreichbar. Willst du das nicht, stell ihn unter **Netzwerk** auf eine andere Nummer und trag die bei `service` ein; ohne Tunnel lass `tunnel` aus.
+
+## Push-Mitteilungen
+
+Die iPhone-App meldet einem Musiker auch bei geschlossener App, wenn er eingeteilt wurde, ein Set mit ihm geändert wurde, eine Nachricht an ihn kam oder ein neuer Termin ihn fragt. Ob er das will, entscheidet jeder auf seinem Handy, je Art.
+
+- **Was wohin geht:** Der Inhalt wird hier im Add-on für jedes Handy mit dessen eigenem Schlüssel verschlüsselt. Über das Relay `push.chordwright.app` (ein Cloudflare Worker) und Apple geht nur der verschlüsselte Inhalt und ein Platzhalter („Neuigkeiten in deiner Band“). Das Relay speichert nichts.
+- **Abschalten:** `push: false`. Ein eigenes Relay (Quelltext im App-Repository unter `push/`) trägst du unter `push_relay` ein.
+- Die angemeldeten Handys liegen in `.chordwright/push.json` und gehen in keine Sicherung.
 
 ## Die Songs als Dateien
 

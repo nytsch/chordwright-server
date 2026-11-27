@@ -56,6 +56,21 @@ fn env_or(name: &str, fallback: &str) -> String {
         .unwrap_or_else(|| fallback.to_string())
 }
 
+/// Push through the relay of `push_relay`, or Chordwright's; off with `push: false`.
+fn push_relay(options: &Value) -> Option<String> {
+    if options["push"] == Value::Bool(false) {
+        return None;
+    }
+    Some(
+        options["push_relay"]
+            .as_str()
+            .map(str::trim)
+            .filter(|r| !r.is_empty())
+            .unwrap_or(chordwright_server::DEFAULT_PUSH_RELAY)
+            .to_string(),
+    )
+}
+
 fn read_options(data: &Path) -> Value {
     std::fs::read_to_string(data.join("options.json"))
         .ok()
@@ -414,6 +429,7 @@ pub fn options() -> Result<Addon, String> {
         plain_port: tunnel.then_some(TUNNEL_PORT),
         backup_every: every.unwrap_or(defaults.backup_every),
         backup_keep: keep.map(|k| k as usize).unwrap_or(defaults.backup_keep),
+        push_relay: push_relay(&options),
         ..defaults
     };
     Ok(Addon {
