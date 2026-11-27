@@ -31,7 +31,7 @@ fn parse_args(argv: &[String]) -> Args {
         let arg = &argv[i];
         if matches!(
             arg.as_str(),
-            "--insecure" | "--ready-json" | "--exit-with-stdin" | "--addon"
+            "--insecure" | "--ready-json" | "--exit-with-stdin" | "--addon" | "--stage-only"
         ) {
             flags.insert(arg[2..].to_string());
         } else if let Some(name) = arg.strip_prefix("--") {
@@ -89,6 +89,7 @@ fn parse_args(argv: &[String]) -> Args {
             backup_keep: keep
                 .map(|k| k.max(1.0) as usize)
                 .unwrap_or(defaults.backup_keep),
+            stage_only: flags.contains("stage-only"),
         },
         addon: flags.contains("addon"),
         ready_json: flags.contains("ready-json"),
@@ -177,8 +178,14 @@ fn main() {
         for url in ready.lan.iter().flat_map(|l| &l.site) {
             println!("  app    {url}");
         }
+        if let Some(pin) = ready.lan.as_ref().and_then(|l| l.pin.as_deref()) {
+            println!("  pin    {pin}");
+        }
         if let Some(code) = &o.pairing {
             println!("  code   {code}");
+        }
+        if o.stage_only {
+            println!("  only the stage, no library");
         }
         println!(
             "  auth   {}",

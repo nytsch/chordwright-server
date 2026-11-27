@@ -36,7 +36,7 @@ pub use assistant::{
     Usage as AssistantUsage, LENGTH_DAILY, MODEL as ASSISTANT_MODEL,
 };
 
-pub use certs::{certificate_names, ensure_own_certificate, Own};
+pub use certs::{ca_pin, ca_pin_of, certificate_names, ensure_own_certificate, Own};
 pub use churchtools::{
     clean_url as clean_churchtools_url, person_name as churchtools_person_name, ChurchTools,
 };
@@ -124,6 +124,11 @@ pub struct Options {
     pub backup_every: f64,
     /// How many scheduled snapshots stay.
     pub backup_keep: usize,
+    /// Only the shared stage: `/api/health`, `/api/time`, `/api/stage…`,
+    /// `/api/events` (which then carries nothing but `stage`) and `/api/pair`.
+    /// Every other route is 404 `stage only` — for a laptop on stage whose
+    /// token hands out no library.
+    pub stage_only: bool,
 }
 
 impl Default for Options {
@@ -146,6 +151,7 @@ impl Default for Options {
             members: Vec::new(),
             backup_every: 24.0,
             backup_keep: 14,
+            stage_only: false,
         }
     }
 }
@@ -438,6 +444,10 @@ pub struct Lan {
     pub port: u16,
     pub urls: Vec<String>,
     pub ca: bool,
+    /// SHA-256 over the certificate authority (DER), base64url: what a QR code
+    /// carries so an app trusts exactly this authority without installing it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub pin: Option<String>,
     /// Where a browser opens the app (`site`): the plain listener's
     /// addresses when there is one, else the main one's.
     #[serde(skip_serializing_if = "Vec::is_empty")]
@@ -661,6 +671,7 @@ impl Hub {
             self.0.ca_der.clone(),
             None,
             None,
+            false,
         )?;
         instances.insert(id.to_string(), Instance::open(shared, &self.0.runtime));
         Ok(())
@@ -1095,6 +1106,7 @@ fn start(mut o: Options) -> Result<Server, String> {
             .clone()
             .filter(|c| !c.is_empty())
             .map(pairing::Pairing::new),
+        o.stage_only,
     )?;
     shared.set_members(o.members.clone());
 
@@ -1173,6 +1185,7 @@ fn start(mut o: Options) -> Result<Server, String> {
             port,
             urls,
             ca: shared.ca_der.is_some(),
+            pin: shared.ca_der.as_deref().map(certs::ca_pin),
             site,
         }
     });
@@ -1194,6 +1207,7 @@ fn start(mut o: Options) -> Result<Server, String> {
 }
 
 /// What one library needs while it is served, its folder laid out.
+#[allow(clippy::too_many_arguments)]
 fn library_state(
     root: PathBuf,
     token: String,
@@ -1202,6 +1216,7 @@ fn library_state(
     ca_der: Option<Vec<u8>>,
     site: Option<Site>,
     pairing: Option<pairing::Pairing>,
+    stage_only: bool,
 ) -> Result<Arc<Shared>, String> {
     let store = Store::new(&root);
     store
@@ -1216,6 +1231,7 @@ fn library_state(
         ca_der,
         site,
         pairing,
+        stage_only,
         store,
         backups: Backups::new(&root, backup_keep),
         journal: Journal::open(&root),

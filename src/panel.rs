@@ -85,9 +85,15 @@ fn form_field(body: &str, name: &str) -> Option<String> {
     })
 }
 
-pub fn connect_link(server: &str, token: &str) -> String {
+/// Der Link im QR-Code. `pin` (`ca_pin`) nur, wo die Verbindung mit der
+/// eigenen CA kommt — über den Tunnel zeigt Cloudflare ein anderes Zertifikat,
+/// ein Pin dort sperrte die App aus.
+pub fn connect_link(server: &str, token: &str, pin: Option<&str>) -> String {
+    let pin = pin
+        .map(|p| format!("&pin={}", form_encode(p)))
+        .unwrap_or_default();
     format!(
-        "{APP_URL}#/settings/source?server={}&token={}",
+        "{APP_URL}#/settings/source?server={}&token={}{pin}",
         form_encode(server),
         form_encode(token)
     )
@@ -524,6 +530,8 @@ pub struct Panel {
     /// Der Token der Hauptbibliothek.
     pub token: String,
     pub own_ca: bool,
+    /// Der Fingerabdruck der eigenen CA (`ca_pin`), für den QR-Code.
+    pub pin: Option<String>,
     /// Der Ordner der Hauptbibliothek in share.
     pub folder: String,
     /// Unter Home Assistant: Pfade als „share/…“, wie Samba sie zeigt.
@@ -757,7 +765,8 @@ impl Ui {
             Some(server) => {
                 let root = server.strip_suffix(&shown.path).unwrap_or(server);
                 let ca = format!("{root}/ca.crt");
-                let link = connect_link(server, &shown.token);
+                let pin = self.panel.pin.as_deref().filter(|_| self.panel.own_ca && !outside);
+                let link = connect_link(server, &shown.token, pin);
                 let ca_step = if self.panel.own_ca && !outside {
                     format!(
                         "<section>\n  <h3><span class=\"n\">1</span>Zertifikat <small>einmal pro Gerät</small></h3>\n  {}\n  \
@@ -1293,7 +1302,12 @@ impl Ui {
         let code = match &server {
             None => String::new(),
             Some(server) => {
-                let link = connect_link(server, &m.token);
+                let pin = self
+                    .panel
+                    .pin
+                    .as_deref()
+                    .filter(|_| self.panel.own_ca && self.panel.public_url.is_none());
+                let link = connect_link(server, &m.token, pin);
                 let reach = if self.panel.public_url.is_some() {
                     String::new()
                 } else {
@@ -2261,6 +2275,7 @@ mod tests {
                 port: "4174".into(),
                 token: "owner".into(),
                 own_ca: false,
+                pin: None,
                 folder: "chordwright".into(),
                 samba: false,
                 public_url: None,
@@ -2360,6 +2375,7 @@ mod tests {
                 port: "4174".into(),
                 token: "owner".into(),
                 own_ca: false,
+                pin: None,
                 folder: "chordwright".into(),
                 samba: false,
                 public_url: None,
@@ -2458,6 +2474,7 @@ mod tests {
                 port: "4174".into(),
                 token: "owner".into(),
                 own_ca: false,
+                pin: None,
                 folder: "chordwright".into(),
                 samba: false,
                 public_url: None,
@@ -2629,6 +2646,7 @@ mod tests {
                 port: "4174".into(),
                 token: "owner".into(),
                 own_ca: false,
+                pin: None,
                 folder: "chordwright".into(),
                 samba: false,
                 public_url: None,
@@ -2709,6 +2727,7 @@ mod tests {
                 port: "4174".into(),
                 token: "owner".into(),
                 own_ca: false,
+                pin: None,
                 folder: "chordwright".into(),
                 samba: false,
                 public_url: None,
@@ -2754,6 +2773,7 @@ mod tests {
         let ui = Ui {
             panel: Panel {
                 own_ca: true,
+                pin: Some("PIN-abc_123".into()),
                 ..ui.panel
             },
             ..ui
@@ -2764,6 +2784,10 @@ mod tests {
         }
         assert!(page.contains("data-link=\"https://192.168.1.5:4174/ca.crt\""));
         assert!(page.contains("data-file=\"Chordwright - 2 Musiker_7.png\""));
+        assert!(
+            page.contains("&amp;pin=PIN-abc_123") || page.contains("&pin=PIN-abc_123"),
+            "the musician's code carries the pin"
+        );
         assert_eq!(file_name("Sönke (Aushilfe)"), "Soenke (Aushilfe)");
         drop(server);
         let _ = std::fs::remove_dir_all(&root);
@@ -2811,6 +2835,7 @@ mod tests {
                 port: "4174".into(),
                 token: "owner".into(),
                 own_ca: false,
+                pin: None,
                 folder: "chordwright".into(),
                 samba: false,
                 public_url: None,
@@ -2848,8 +2873,12 @@ mod tests {
     #[test]
     fn links_and_order() {
         assert_eq!(
-            connect_link("https://[fd00::5]:4174", "a b"),
+            connect_link("https://[fd00::5]:4174", "a b", None),
             "https://beta.chordwright.app/#/settings/source?server=https%3A%2F%2F%5Bfd00%3A%3A5%5D%3A4174&token=a+b"
+        );
+        assert_eq!(
+            connect_link("https://192.168.1.5:4174", "t", Some("ab-_c")),
+            "https://beta.chordwright.app/#/settings/source?server=https%3A%2F%2F192.168.1.5%3A4174&token=t&pin=ab-_c"
         );
         let ordered = order_addresses(&[
             "fd00::5".into(),

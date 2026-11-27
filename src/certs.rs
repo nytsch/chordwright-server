@@ -18,7 +18,7 @@
 use std::net::IpAddr;
 use std::path::{Path, PathBuf};
 
-use base64::engine::general_purpose::STANDARD as BASE64;
+use base64::engine::general_purpose::{STANDARD as BASE64, URL_SAFE_NO_PAD};
 use base64::Engine;
 use ring::rand::{SecureRandom, SystemRandom};
 use ring::signature::{EcdsaKeyPair, KeyPair, ECDSA_P256_SHA256_ASN1_SIGNING};
@@ -141,6 +141,22 @@ fn pem(label: &str, der: &[u8]) -> String {
         "-----BEGIN {label}-----\n{}\n-----END {label}-----\n",
         lines.join("\n")
     )
+}
+
+/// The pin of a certificate authority: SHA-256 over its DER, base64url
+/// without padding (43 characters). An app that got it from a QR code trusts
+/// this authority and no other for that server — without installing it. The
+/// authority stays the same for years (`CA_VALIDITY_DAYS`); the server
+/// certificate it issues may change with every new address and does not
+/// touch the pin.
+pub fn ca_pin(der: &[u8]) -> String {
+    URL_SAFE_NO_PAD.encode(ring::digest::digest(&ring::digest::SHA256, der))
+}
+
+/// The pin of the authority in a PEM file (`ca-cert.pem`), if it holds one.
+pub fn ca_pin_of(path: &Path) -> Option<String> {
+    let text = std::fs::read_to_string(path).ok()?;
+    Some(ca_pin(&pem_block(&text, "CERTIFICATE")?))
 }
 
 /// The DER inside the first `label` block of a PEM text.
@@ -601,6 +617,32 @@ mod tests {
             before,
             std::fs::read(&own.cert).unwrap(),
             "another address, a new one"
+        );
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn the_pin_is_sha256_in_base64url() {
+        // SHA-256("abc"), the FIPS 180-2 example.
+        assert_eq!(
+            ca_pin(b"abc"),
+            "ungWv48Bz-pBQUDeXa4iI7ADYaOWF3qctBD_YfIAFa0"
+        );
+    }
+
+    #[test]
+    fn a_new_address_keeps_the_pin() {
+        let dir = std::env::temp_dir().join(format!("cw-pin-{}-{}", std::process::id(), now_ms()));
+        let own = ensure_own_certificate(&dir, &["127.0.0.1".into()]).unwrap();
+        let pin = ca_pin_of(&own.ca).unwrap();
+        assert_eq!(pin.len(), 43);
+        let der = pem_block(&std::fs::read_to_string(&own.ca).unwrap(), "CERTIFICATE").unwrap();
+        assert_eq!(pin, ca_pin(&der));
+        ensure_own_certificate(&dir, &["127.0.0.1".into(), "192.168.1.5".into()]).unwrap();
+        assert_eq!(
+            ca_pin_of(&own.ca).unwrap(),
+            pin,
+            "the server certificate changed, the authority did not"
         );
         std::fs::remove_dir_all(dir).unwrap();
     }

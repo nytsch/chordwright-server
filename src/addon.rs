@@ -24,7 +24,7 @@ use std::net::{TcpStream, ToSocketAddrs};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use chordwright_server::{certificate_names, ensure_own_certificate, Options};
+use chordwright_server::{ca_pin_of, certificate_names, ensure_own_certificate, Options};
 
 use crate::panel::{address_url, order_addresses, Panel};
 use serde_json::Value;
@@ -380,6 +380,7 @@ pub fn options() -> Result<Addon, String> {
             port: outside.clone(),
             token: token.clone(),
             own_ca: own.is_some(),
+            pin: own.as_ref().and_then(|o| ca_pin_of(&o.ca)),
             folder: folder.clone(),
             samba: in_home_assistant,
             public_url: public.clone(),
